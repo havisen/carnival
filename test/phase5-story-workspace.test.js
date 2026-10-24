@@ -618,10 +618,13 @@ test('character sheets are versioned and promotable', async (t) => {
 
 test('character sheet generation endpoint writes a versioned image', async (t) => {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'story-ws-sheet-http-'));
+  const imagePrompts = [];
 
   const mock = http.createServer((req, res) => {
-    req.on('data', () => {});
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
+      imagePrompts.push(JSON.parse(body).prompt);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ data: [{ b64_json: PNG.toString('base64'), output_format: 'png' }] }));
     });
@@ -693,10 +696,17 @@ test('character sheet generation endpoint writes a versioned image', async (t) =
   result = await request(`/api/story/${project.id}/characters`, {
     method: 'POST',
     cookie,
-    body: { name: 'Ava', gender: 'Female' },
+    body: { name: 'Ava', gender: 'Female', appearance: 'short red hair and freckles', wardrobe: 'blue jacket', continuityNotes: 'silver pendant' },
   });
   assert.equal(result.status, 201);
   const character = result.data.character;
+  result = await request(`/api/projects/${project.id}`, {
+    method: 'PUT', cookie, body: { characterReferences: [
+      { name: 'Ava', gender: 'Female', referenceMaterial: 'short red hair and freckles, blue jacket, silver pendant' },
+      { name: 'Ben', gender: 'Male', referenceMaterial: 'long black hair, green coat' },
+    ] },
+  });
+  assert.equal(result.status, 200);
 
   result = await request(`/api/story/${project.id}/characters/${character.id}/sheets/generate`, {
     method: 'POST',
@@ -708,9 +718,42 @@ test('character sheet generation endpoint writes a versioned image', async (t) =
   assert.match(result.data.sheet.file, /\.png$/);
   assert.ok(result.data.sheet.prompt.includes('Ava'));
   assert.equal(result.data.story.characterSheets.length, 1);
+  const firstPrompt = result.data.sheet.prompt;
+  assert.equal(imagePrompts[0], firstPrompt);
+  assert.match(firstPrompt, /short red hair and freckles/);
+  assert.match(firstPrompt, /blue jacket/);
+  assert.match(firstPrompt, /silver pendant/);
+  assert.doesNotMatch(firstPrompt, /Style:|Visual guidance:/);
+  const layout = firstPrompt.split('\n').find((line) => line.startsWith('Use the same character-sheet layout'));
+  assert.ok(layout);
+  assert.match(layout, /exactly three evenly spaced, equal-size, full-body standing poses/);
+  assert.match(layout, /front view, three-quarter view, and side profile/);
+  assert.match(layout, /head to toe.*same scale.*consistent margins.*clear space/);
+  assert.match(layout, /seamless light gray studio background.*same soft, even lighting/);
+
+  result = await request(`/api/story/${project.id}/characters/${character.id}/sheets/generate`, { method: 'POST', cookie });
+  assert.equal(result.status, 201, result.data && result.data.error);
+  assert.equal(result.data.sheet.version, 2);
+  assert.equal(result.data.sheet.prompt, firstPrompt);
+  assert.equal(imagePrompts[1], firstPrompt);
+
+  const secondCharacter = await request(`/api/story/${project.id}/characters`, {
+    method: 'POST', cookie, body: { name: 'Ben', appearance: 'long black hair', wardrobe: 'green coat' },
+  });
+  assert.equal(secondCharacter.status, 201);
+  const secondSheet = await request(`/api/story/${project.id}/characters/${secondCharacter.data.character.id}/sheets/generate`, {
+    method: 'POST', cookie,
+  });
+  assert.equal(secondSheet.status, 201, secondSheet.data && secondSheet.data.error);
+  assert.equal(secondSheet.data.sheet.version, 1);
+  assert.match(secondSheet.data.sheet.prompt, /long black hair/);
+  assert.match(secondSheet.data.sheet.prompt, /green coat/);
+  assert.doesNotMatch(secondSheet.data.sheet.prompt, /short red hair and freckles/);
+  assert.ok(secondSheet.data.sheet.prompt.split('\n').includes(layout));
+  assert.equal(imagePrompts[2], secondSheet.data.sheet.prompt);
 
   // The generated sheet image is served back.
-  const imageUrl = `/api/story/sheet-image/${project.id}/${encodeURIComponent(result.data.sheet.file)}`;
+  const imageUrl = `/api/story/sheet-image/${project.id}/${encodeURIComponent(secondSheet.data.sheet.file)}`;
   const served = await fetch(base + imageUrl, { headers: { cookie } });
   assert.equal(served.status, 200);
   assert.equal(served.headers.get('content-type'), 'image/png');
@@ -931,5 +974,3 @@ test('chat routes to Anthropic and OpenAI-compatible providers with custom conte
   assert.equal(result.status, 200);
   assert.equal(result.data.reply, 'openai:ctx');
 });
-
-

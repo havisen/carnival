@@ -2,6 +2,8 @@
 
 The production app is hosted as a DirectAdmin Node.js app. Upload changed runtime files to its application root, restart that Node.js app, and refresh the browser. Keep the existing database location and encryption secret during updates.
 
+Character sheet generation also needs `public/images/character-sheet-layout-reference.png` in that relative path on the server. The app sends it as a Seedream reference image with each character sheet request; include it when uploading the character-sheet changes.
+
 For local development, run this app directly with Node.js 24 or newer. DeepSeek Harness is not required:
 
 ```powershell

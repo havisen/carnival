@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-24.28" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-24.29" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -378,16 +378,14 @@
         <div class="card story-head">
           <div>
             <h2 class="card-title">Story Workspace</h2>
-            <p class="hint">Structure the brief, approved references, scene matrix, and versioned prompts. Nothing is generated or approved automatically.</p>
+            <p class="hint">Turn Reference Stage material into character sheets, action references, and location references.</p>
           </div>
           <div class="story-head-controls">
             <label class="field inline">
               <span class="field-label">Project</span>
               <select id="story-project"></select>
             </label>
-            <button class="btn btn-secondary btn-sm" id="story-refresh" type="button">↻ Refresh</button>
-            <button class="btn btn-primary btn-sm" id="story-validate" type="button">Check continuity</button>
-            <button class="btn btn-secondary btn-sm hidden" id="story-generate-workspace" type="button">✨ Generate workspace from reference</button>
+            <button class="btn btn-primary btn-sm" id="story-generate-worksheet" type="button">Generate worksheet</button>
           </div>
         </div>
 
@@ -404,11 +402,40 @@
           <button class="btn btn-secondary btn-sm" id="story-retry" type="button">Retry</button>
         </div>
 
+        <div class="hidden" id="story-worksheet">
+          <div class="card">
+            <h2 class="card-title">Reference worksheet <span id="story-reference-status" class="hint"></span></h2>
+            <div id="story-source-references"></div>
+            <div class="results-head">
+              <label class="field inline"><span class="field-label">Character</span><select id="worksheet-character"></select></label>
+              <button class="btn btn-secondary btn-sm" id="worksheet-generate-one" type="button">Generate character reference sheet</button>
+              <button class="btn btn-secondary btn-sm" id="worksheet-generate-all" type="button">Generate all character reference sheets</button>
+            </div>
+            <div id="worksheet-sheets"></div>
+          </div>
+          <div class="card">
+            <h2 class="card-title">Action Reference Generator <span id="worksheet-action-status" class="hint"></span></h2>
+            <div class="results-head">
+              <label class="field inline"><span class="field-label">Number of pictures</span><input type="number" id="worksheet-picture-count" min="1" max="20" value="6" /></label>
+              <button class="btn btn-secondary btn-sm" id="worksheet-generate-actions" type="button">Generate action references</button>
+              <button class="btn btn-primary btn-sm hidden" id="worksheet-save-actions" type="button">Save action references</button>
+            </div>
+            <div id="worksheet-actions"></div>
+          </div>
+          <div class="card">
+            <h2 class="card-title">Location Reference Generator <span id="worksheet-location-status" class="hint"></span></h2>
+            <div class="results-head">
+              <button class="btn btn-secondary btn-sm" id="worksheet-generate-locations" type="button">Generate location references</button>
+              <button class="btn btn-primary btn-sm hidden" id="worksheet-save-locations" type="button">Save location references</button>
+            </div>
+            <div id="worksheet-locations"></div>
+          </div>
+        </div>
         <div class="hidden" id="story-content">
           <div class="card story-brief-card">
             <div class="results-head">
               <h2 class="card-title">Story brief</h2>
-              <button class="btn btn-primary btn-sm" id="story-save-brief" type="button">Save brief</button>
+            <button class="btn btn-primary btn-sm" id="story-save-brief" type="button">Save brief</button>
             </div>
             <div class="story-form-grid">
               <label class="field"><span class="field-label">Story title</span><input id="story-brief-title" maxlength="200" /></label>
@@ -1244,6 +1271,6 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="app.js?v=2026-10-24.31"></script>
+  <script src="app.js?v=2026-10-24.32"></script>
 </body>
 </html>

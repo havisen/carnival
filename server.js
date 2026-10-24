@@ -21,6 +21,11 @@ security.init(db.DATA_DIR);
 const PORT = Number(process.env.PORT) || 3000;
 const APP_VERSION = '4.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const CHARACTER_SHEET_LAYOUT_REFERENCE_PATH = path.join(
+  PUBLIC_DIR,
+  'images',
+  'character-sheet-layout-reference.png'
+);
 const DEEPSEEK_ENDPOINT =
   process.env.DEEPSEEK_ENDPOINT || 'https://api.deepseek.com/chat/completions';
 const BYTEPLUS_IMAGE_ENDPOINT =
@@ -952,25 +957,14 @@ const REVIEW_BATCH_MAX_CHARS = 40000;
 const REVIEW_BATCH_MAX_FIELDS = 8;
 const reviewsInFlight = new Map();
 
-function buildCharacterSheetPrompt(character, story) {
+const CHARACTER_SHEET_TEMPLATE = 'Use the same character-sheet layout for every character: one wide canvas with exactly three evenly spaced, equal-size, full-body standing poses in a single horizontal row, ordered left to right as front view, three-quarter view, and side profile. Show head to toe in every pose at the same scale, with consistent margins and clear space between poses; no cropping or overlapping. Use a seamless light gray studio background and the same soft, even lighting throughout. Treat the attached reference image only as a guide to the three-view composition, pose order, spacing, and background; replace its generic mannequin with the requested character and canonical wardrobe, and do not copy the mannequin or its outfit. Keep the character identity, appearance, canonical outfit, and distinguishing details identical across all three views. Character-specific visual guidance may affect the character, but must not change this background, framing, pose count, pose order, or spacing.';
+
+function buildCharacterSheetPrompt(character, reference) {
   const parts = [];
-  const subject = character.name || 'the character';
-  const age = character.age ? `, age ${character.age}` : '';
-  const gender = character.gender ? ` (${character.gender})` : '';
-  parts.push(`Photorealistic full-body character reference sheet of ${subject}${age}${gender}.`);
-  if (character.appearance) parts.push(`Appearance: ${character.appearance}`);
-  if (character.wardrobe) parts.push(`Wardrobe: ${character.wardrobe}`);
-  if (character.continuityNotes) parts.push(`Continuity details: ${character.continuityNotes}`);
-  const style = (story && Array.isArray(story.styles) && story.styles[0]) || null;
-  if (style) {
-    if (style.description) parts.push(`Style: ${style.description}`);
-    if (style.guidance) parts.push(`Visual guidance: ${style.guidance}`);
-  }
-  parts.push('Centered full-body pose, simple neutral background, consistent soft lighting, photographic realism.');
-  const exclusions = [];
-  if (style && Array.isArray(style.exclusions)) exclusions.push(...style.exclusions);
-  exclusions.push('text', 'watermark', 'extra limbs', 'distorted face');
-  if (exclusions.length) parts.push(`Avoid: ${exclusions.join(', ')}.`);
+  parts.push(`Photorealistic full-body character reference sheet of ${character.name}.`);
+  parts.push(`Character reference: ${reference}`);
+  parts.push(CHARACTER_SHEET_TEMPLATE, 'Photographic realism.');
+  parts.push('Avoid: text, watermark, extra limbs, distorted face.');
   return parts.join('\n').slice(0, 30000);
 }
 
@@ -2257,6 +2251,7 @@ async function handleReference(req, res) {
     replace: replaceWorkspace,
     characterReferences,
   });
+  storyStore.setWorksheetSetting(session.user_id, projectId, setting);
   const current = db.getProject(session.user_id, projectId);
 
   return sendJSON(res, 200, {
@@ -2566,7 +2561,7 @@ async function handleGenerationPrompt(req, res) {
   });
 }
 
-async function generateImageBuffer(apiKey, imageModel, size, prompt) {
+async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceImage = null) {
   let upstream;
   try {
     upstream = await fetch(BYTEPLUS_IMAGE_ENDPOINT, {
@@ -2578,6 +2573,7 @@ async function generateImageBuffer(apiKey, imageModel, size, prompt) {
       body: JSON.stringify({
         model: imageModel,
         prompt,
+        ...(referenceImage ? { image: [referenceImage] } : {}),
         size,
         response_format: 'b64_json',
         output_format: 'png',
@@ -3357,6 +3353,12 @@ function handleStoryGet(req, res, projectId) {
   const session = requireUser(req);
   const story = storyStore.getStory(session.user_id, storyProjectId(projectId));
   if (!story) fail(404, 'Project not found.');
+  const project = db.getProject(session.user_id, projectId);
+  story.referenceSource = {
+    name: project.title, idea: project.idea, characters: (project.characterReferences || []).map((item) => item.name),
+    setting: story.worksheet.setting || story.brief.setting || '',
+    referenceMaterial: project.referenceMaterial, characterReferences: project.characterReferences || [],
+  };
   return sendJSON(res, 200, { story });
 }
 
@@ -3611,9 +3613,17 @@ async function handleStorySheetGenerate(req, res, projectId, characterId) {
   if (!story) fail(404, 'Project not found.');
   const character = (story.characters || []).find((item) => item.id === characterId);
   if (!character) fail(404, 'Character not found.');
-
-  const prompt = buildCharacterSheetPrompt(character, story);
-  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt);
+  const source = (project.characterReferences || []).find((item) => item.name === character.name);
+  const reference = source && String(source.referenceMaterial || '').trim();
+  if (!reference) fail(409, 'This character needs a saved Character Reference in Reference Stage.', 'CHARACTER_REFERENCE_REQUIRED');
+  const prompt = buildCharacterSheetPrompt(character, reference);
+  let referenceImage;
+  try {
+    referenceImage = `data:image/png;base64,${fs.readFileSync(CHARACTER_SHEET_LAYOUT_REFERENCE_PATH).toString('base64')}`;
+  } catch (err) {
+    fail(500, `Could not load the character sheet layout reference: ${err.message}`, 'IMAGEGEN_REFERENCE_MISSING');
+  }
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImage);
 
   const file = `${crypto.randomUUID()}.${generated.extension}`;
   const directory = path.join(IMAGE_DIR, project.id);
@@ -3689,6 +3699,89 @@ function handleStoryValidate(req, res, projectId) {
       warnings: warnings.filter((item) => item.severity === 'warning').length,
     },
   });
+}
+
+function worksheetProject(req, projectId) {
+  const session = requireUser(req);
+  const project = db.getProject(session.user_id, storyProjectId(projectId));
+  if (!project) fail(404, 'Project not found.');
+  return { session, project };
+}
+
+function worksheetKey(session) {
+  if (!session.api_key_enc) fail(409, 'Save a DeepSeek API key in Settings first.', 'NO_API_KEY');
+  const key = security.decryptApiKey(session.api_key_enc);
+  if (!key) fail(500, 'Your saved API key could not be read. Save it again.', 'KEY_UNREADABLE');
+  return key;
+}
+
+function worksheetActions(value, names, count) {
+  if (!Array.isArray(value) || value.length !== count) fail(502, `DeepSeek must return exactly ${count} action references.`, 'INVALID_WORKSHEET');
+  return value.map((item, index) => {
+    if (!item || typeof item !== 'object') fail(502, 'Invalid action reference.', 'INVALID_WORKSHEET');
+    const action = storyTextField(item.action, `Action ${index + 1}`, 4500, { required: true });
+    const locationSentence = storyTextField(item.locationSentence, `Location sentence ${index + 1}`, 500, { required: true });
+    if (!/[.!?]$/.test(locationSentence)) fail(502, 'Each location sentence must end in punctuation.', 'INVALID_WORKSHEET');
+    if (/[.!?]\s+\S/.test(locationSentence)) fail(502, 'Each location ending must be one sentence.', 'INVALID_WORKSHEET');
+    const characters = Array.isArray(item.characters) ? item.characters.map((name) => String(name).trim()) : [];
+    if (characters.some((name) => !names.includes(name))) fail(502, 'Action references must use only supplied character names.', 'INVALID_WORKSHEET');
+    return { action, locationSentence, characters };
+  });
+}
+
+function worksheetLocations(value, count) {
+  if (!Array.isArray(value) || value.length !== count) fail(502, `DeepSeek must return exactly ${count} location references.`, 'INVALID_WORKSHEET');
+  return value.map((item, index) => ({
+    name: storyTextField(item && item.name, `Location ${index + 1} name`, 200, { required: true }),
+    description: storyTextField(item && item.description, `Location ${index + 1} description`, 5000, { required: true }),
+  }));
+}
+
+async function handleWorksheetGenerate(req, res, projectId, type) {
+  const { session, project } = worksheetProject(req, projectId);
+  const body = await readJSON(req);
+  const key = worksheetKey(session);
+  const worksheet = storyStore.getStory(session.user_id, project.id).worksheet;
+  let content;
+  let system;
+  let count;
+  if (type === 'actions') {
+    count = Number(body.count);
+    if (!Number.isInteger(count) || count < 1 || count > 20) fail(400, 'Choose 1 to 20 pictures.');
+    if (!String(project.referenceMaterial || '').trim()) fail(409, 'Save Reference Material first.');
+    const names = (project.characterReferences || []).map((item) => item.name).filter(Boolean);
+    system = `Return only JSON {"actions":[{"action":"...","locationSentence":"One final sentence describing where this action takes place.","characters":["name"]}]}. Exactly ${count} numbered-in-order actions, one per picture. Use only the supplied Reference Material as narrative context. Refer to characters only by the supplied names, never invent names or character details. Every action must end with the separate, single locationSentence. Do not put character names in locationSentence.`;
+    content = `Reference Material:\n${project.referenceMaterial}\n\nAllowed character names (names only): ${JSON.stringify(names)}`;
+  } else {
+    if (!worksheet.actions.length) fail(409, 'Save action references first.');
+    count = worksheet.actions.length;
+    system = `Return only JSON {"locations":[{"name":"...","description":"..."}]}. Exactly ${count} descriptions in the same order as the location sentences. Use only the supplied setting and the final location sentence of each action. No plot, character, or other reference material.`;
+    content = `Setting: ${worksheet.setting || '(not specified)'}\n\nLocation sentences: ${JSON.stringify(worksheet.actions.map((item) => item.locationSentence))}`;
+  }
+  const response = await callDeepSeekJson(key, {
+    model: TEXT_MODELS.has(session.text_model) ? session.text_model : DEFAULT_TEXT_MODEL,
+    messages: [{ role: 'system', content: system }, { role: 'user', content }],
+    temperature: 0.7, max_tokens: 12000,
+  });
+  const data = response.data || {};
+  const items = type === 'actions'
+    ? worksheetActions(data.actions, (project.characterReferences || []).map((item) => item.name), count)
+    : worksheetLocations(data.locations, count);
+  return sendJSON(res, 200, { [type]: items });
+}
+
+async function handleWorksheetSave(req, res, projectId, type) {
+  const { session, project } = worksheetProject(req, projectId);
+  const body = await readJSON(req);
+  const items = type === 'actions'
+    ? worksheetActions(body.actions, (project.characterReferences || []).map((item) => item.name),
+      Array.isArray(body.actions) ? body.actions.length : -1)
+    : worksheetLocations(body.locations, storyStore.getStory(session.user_id, project.id).worksheet.actions.length);
+  if (type === 'actions' && (!items.length || items.length > 20)) fail(400, 'Save 1 to 20 actions.');
+  const worksheet = type === 'actions'
+    ? storyStore.saveWorksheetActions(session.user_id, project.id, items)
+    : storyStore.saveWorksheetLocations(session.user_id, project.id, items);
+  return sendJSON(res, 200, { worksheet });
 }
 
 async function handleStoryWorkspaceGenerate(req, res, projectId) {
@@ -4079,6 +4172,13 @@ async function handleApi(req, res, pathname) {
   if (storyWorkspaceGenerateMatch) {
     if (method !== 'POST') fail(405, 'Method not allowed.');
     return handleStoryWorkspaceGenerate(req, res, storyWorkspaceGenerateMatch[1]);
+  }
+  const worksheetMatch = pathname.match(/^\/api\/story\/([A-Za-z0-9_-]{1,80})\/worksheet\/(actions|locations)\/(generate|save)$/);
+  if (worksheetMatch) {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return worksheetMatch[3] === 'generate'
+      ? handleWorksheetGenerate(req, res, worksheetMatch[1], worksheetMatch[2])
+      : handleWorksheetSave(req, res, worksheetMatch[1], worksheetMatch[2]);
   }
 
   const storyMatch = pathname.match(/^\/api\/story\/([A-Za-z0-9_-]{1,80})$/);

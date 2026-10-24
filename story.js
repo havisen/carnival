@@ -312,6 +312,14 @@ function schema() {
     );
     CREATE INDEX IF NOT EXISTS idx_character_sheets_char ON character_sheets(project_id, character_id, version DESC);
 
+    CREATE TABLE IF NOT EXISTS story_worksheets (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      setting TEXT NOT NULL DEFAULT '',
+      actions_json TEXT NOT NULL DEFAULT '[]',
+      locations_json TEXT NOT NULL DEFAULT '[]'
+    );
+
     CREATE TABLE IF NOT EXISTS story_sync (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
       migrated_at TEXT NOT NULL
@@ -349,6 +357,54 @@ function promptRows(projectId) {
 
 function characterSheetRows(projectId) {
   return rawDb.prepare('SELECT * FROM character_sheets WHERE project_id = ? ORDER BY character_id, version ASC').all(projectId);
+}
+
+function worksheetForUser(userId, projectId) {
+  const row = rawDb.prepare('SELECT * FROM story_worksheets WHERE project_id = ? AND user_id = ?').get(projectId, userId);
+  return {
+    setting: row ? row.setting : '',
+    actions: row ? parseArray(parseJson(row.actions_json, [])) : [],
+    locations: row ? parseArray(parseJson(row.locations_json, [])) : [],
+  };
+}
+
+function setWorksheetSetting(userId, projectId, setting) {
+  if (!projectForUser(userId, projectId)) return null;
+  rawDb.prepare(`INSERT INTO story_worksheets (project_id, user_id, setting) VALUES (?, ?, ?)
+    ON CONFLICT(project_id) DO UPDATE SET setting = excluded.setting`).run(projectId, userId, text(setting, 2000));
+  return worksheetForUser(userId, projectId);
+}
+
+function saveWorksheetActions(userId, projectId, actions) {
+  if (!projectForUser(userId, projectId)) return null;
+  const worksheet = worksheetForUser(userId, projectId);
+  const scenes = actions.map((item, index) => ({
+    id: crypto.randomUUID(), order: index, title: `Scene ${index + 1}`,
+    action: `${item.action} ${item.locationSentence}`,
+    location: item.location, characters: item.characters,
+  }));
+  rawDb.exec('BEGIN');
+  try {
+    rawDb.prepare(`INSERT INTO story_worksheets (project_id, user_id, actions_json, locations_json) VALUES (?, ?, ?, '[]')
+      ON CONFLICT(project_id) DO UPDATE SET actions_json = excluded.actions_json, locations_json = '[]'`)
+      .run(projectId, userId, JSON.stringify(actions));
+    updateProjectScenes(projectId, scenes);
+    rawDb.exec('COMMIT');
+  } catch (err) {
+    rawDb.exec('ROLLBACK');
+    throw err;
+  }
+  return { ...worksheet, actions, locations: [] };
+}
+
+function saveWorksheetLocations(userId, projectId, locations) {
+  if (!projectForUser(userId, projectId)) return null;
+  const worksheet = worksheetForUser(userId, projectId);
+  if (!worksheet.actions.length) throw Object.assign(new Error('Save action references first.'), { status: 409 });
+  rawDb.prepare(`INSERT INTO story_worksheets (project_id, user_id, locations_json) VALUES (?, ?, ?)
+    ON CONFLICT(project_id) DO UPDATE SET locations_json = excluded.locations_json`)
+    .run(projectId, userId, JSON.stringify(locations));
+  return worksheetForUser(userId, projectId);
 }
 
 function toCharacter(row) {
@@ -1302,6 +1358,7 @@ function getStory(userId, projectId) {
     scenes,
     prompts,
     characterSheets,
+    worksheet: worksheetForUser(userId, projectId),
     warnings: validate(userId, projectId, { project: current, brief, characters, locations, styles, scenes, prompts }),
   };
 }
@@ -1493,6 +1550,9 @@ function init(database, databasePath) {
     createCharacterSheet,
     updateCharacterSheetStatus,
     characterSheetByFile,
+    setWorksheetSetting,
+    saveWorksheetActions,
+    saveWorksheetLocations,
     latestDraft,
     validate: validateProject,
     syncGenerationPrompts,

@@ -63,6 +63,9 @@ const state = {
     editor: null,
     dirty: false,
     sheetCharacterId: '',
+    worksheetOpen: false,
+    actionDraft: null,
+    locationDraft: null,
   },
   sidebar: {
     projectId: '',
@@ -1899,6 +1902,8 @@ function renderStoryState() {
   $('#story-empty').classList.toggle('hidden', state.story.loading || Boolean(state.story.data) || Boolean(state.story.error) || Boolean(state.story.projectId));
   $('#story-error').classList.toggle('hidden', !state.story.error);
   $('#story-content').classList.toggle('hidden', !state.story.data);
+  $('#story-content').classList.add('hidden');
+  $('#story-worksheet').classList.toggle('hidden', !state.story.data || !state.story.worksheetOpen);
   if (state.story.error) $('#story-error-text').textContent = state.story.error;
 }
 
@@ -1921,6 +1926,8 @@ async function loadStory(projectId) {
     const { story } = await api(`/api/story/${encodeURIComponent(projectId)}`);
     if (state.story.projectId !== projectId) return;
     state.story.data = story;
+    if ((story.worksheet?.actions || []).length || (story.worksheet?.locations || []).length ||
+        (story.characterSheets || []).length) state.story.worksheetOpen = true;
     state.story.loaded = true;
     state.story.dirty = false;
     renderStory();
@@ -1943,6 +1950,8 @@ function renderStory() {
   const story = state.story.data;
   if (!story) return;
   renderStoryState();
+  renderWorksheet();
+  return;
   const brief = story.brief || {};
   setStoryInput('#story-brief-title', brief.title);
   setStoryInput('#story-brief-logline', brief.logline);
@@ -1963,6 +1972,117 @@ function renderStory() {
   if (generateWorkspace) {
     generateWorkspace.classList.toggle('hidden', !story.hasReference);
   }
+}
+
+function worksheetText(label, value) {
+  const line = document.createElement('p');
+  const strong = document.createElement('strong');
+  strong.textContent = `${label}: `;
+  line.append(strong, document.createTextNode(value || 'Not provided'));
+  return line;
+}
+
+function renderWorksheet() {
+  const story = state.story.data;
+  if (!story) return;
+  const source = story.referenceSource || {};
+  const saved = story.worksheet || { actions: [], locations: [] };
+  const sourceList = $('#story-source-references');
+  sourceList.replaceChildren(
+    worksheetText('Name', source.name), worksheetText('Idea', source.idea),
+    worksheetText('Characters', (source.characters || []).join(', ')),
+    worksheetText('Setting', source.setting),
+    worksheetText('Reference Material', source.referenceMaterial),
+  );
+  (source.characterReferences || []).forEach((item) => {
+    sourceList.appendChild(worksheetText(`Character Reference: ${item.name}`, item.referenceMaterial));
+  });
+  const characters = (source.characterReferences || []).filter((item) => item.name && item.referenceMaterial);
+  const select = $('#worksheet-character');
+  const selected = select.value;
+  select.replaceChildren();
+  characters.forEach((item) => {
+    const character = (story.characters || []).find((candidate) => candidate.name === item.name);
+    if (!character) return;
+    const option = document.createElement('option');
+    option.value = character.id;
+    option.textContent = item.name;
+    select.appendChild(option);
+  });
+  if (Array.from(select.options).some((option) => option.value === selected)) select.value = selected;
+  $('#worksheet-generate-one').disabled = !select.value;
+  $('#worksheet-generate-all').disabled = !select.value;
+  const sheets = $('#worksheet-sheets');
+  sheets.replaceChildren();
+  characters.forEach((item) => {
+    const character = (story.characters || []).find((candidate) => candidate.name === item.name);
+    if (!character) return;
+    const versions = (story.characterSheets || []).filter((sheet) => sheet.characterId === character.id)
+      .sort((a, b) => b.version - a.version);
+    const final = versions.find((sheet) => sheet.status === 'final');
+    const latest = versions[0];
+    const card = document.createElement('div');
+    card.className = 'story-sheet-version';
+    card.appendChild(worksheetText(item.name, final ? 'Added' : latest ? 'Preview, not added' : 'Sheet needed'));
+    [final, latest && latest.id !== final?.id ? latest : null].filter(Boolean).forEach((sheet) => {
+      const img = document.createElement('img');
+      img.className = 'story-sheet-image';
+      img.alt = `${item.name} character reference sheet`;
+      img.src = `/api/story/sheet-image/${encodeURIComponent(story.projectId)}/${encodeURIComponent(sheet.file)}`;
+      card.appendChild(img);
+      if (sheet.status !== 'final') {
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'btn btn-primary btn-sm';
+        add.textContent = 'Add this sheet';
+        add.addEventListener('click', async () => {
+          try {
+            add.disabled = true;
+            await api(`/api/story/sheets/${encodeURIComponent(sheet.id)}/promote`, { method: 'POST' });
+            await loadStory(story.projectId);
+          } catch (err) { add.disabled = false; toast(err.message, 'error'); }
+        });
+        card.appendChild(add);
+      }
+    });
+    if (latest) {
+      const again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'btn btn-secondary btn-sm';
+      again.textContent = 'Generate again';
+      again.addEventListener('click', () => generateWorksheetSheet(character.id, again));
+      card.appendChild(again);
+    }
+    sheets.appendChild(card);
+  });
+  $('#story-reference-status').textContent = (source.characterReferences || []).length && characters.length === (source.characterReferences || []).length && characters.every((item) => {
+    const character = (story.characters || []).find((candidate) => candidate.name === item.name);
+    return (story.characterSheets || []).some((sheet) => sheet.characterId === character?.id && sheet.status === 'final');
+  }) ? 'Done' : `${characters.filter((item) => {
+    const character = (story.characters || []).find((candidate) => candidate.name === item.name);
+    return (story.characterSheets || []).some((sheet) => sheet.characterId === character?.id && sheet.status === 'final');
+  }).length}/${characters.length} added`;
+  renderWorksheetList('actions', state.story.actionDraft || saved.actions);
+  renderWorksheetList('locations', state.story.locationDraft || saved.locations);
+  $('#worksheet-action-status').textContent = saved.actions.length ? 'Done' : 'Not saved';
+  $('#worksheet-location-status').textContent = saved.locations.length ? 'Done' : 'Not saved';
+  $('#worksheet-save-actions').classList.toggle('hidden', !state.story.actionDraft);
+  $('#worksheet-save-locations').classList.toggle('hidden', !state.story.locationDraft);
+  $('#worksheet-generate-locations').disabled = !saved.actions.length;
+  if (saved.actions.length && !state.story.actionDraft) $('#worksheet-picture-count').value = saved.actions.length;
+}
+
+function renderWorksheetList(type, items) {
+  const target = $(`#worksheet-${type}`);
+  target.replaceChildren();
+  if (!items.length) { target.appendChild(worksheetText(type === 'actions' ? 'Actions' : 'Locations', 'Generate to preview.')); return; }
+  items.forEach((item, index) => {
+    const card = document.createElement('div');
+    card.className = 'story-ref-item';
+    card.appendChild(worksheetText(type === 'actions' ? `Action ${index + 1}` : item.name,
+      type === 'actions' ? `${item.action} ${item.locationSentence}` : item.description));
+    target.appendChild(card);
+  });
 }
 
 function storyApprovedBadge(approved) {
@@ -2577,6 +2697,70 @@ async function generateStoryWorkspace(replace = false) {
   if (retryReplace) return generateStoryWorkspace(true);
 }
 
+async function generateWorksheetSheet(characterId, button) {
+  if (!state.user?.hasBytePlusKey) return toast('Save a BytePlus API key in Settings first.', 'error');
+  button.disabled = true;
+  try {
+    await api(`/api/story/${encodeURIComponent(state.story.projectId)}/characters/${encodeURIComponent(characterId)}/sheets/generate`, { method: 'POST' });
+    await loadStory(state.story.projectId);
+    toast('Sheet ready to review. Add it or generate again.', 'success');
+  } catch (err) { toast(err.message || 'Could not generate sheet.', 'error'); }
+  finally { button.disabled = false; }
+}
+
+async function generateWorksheetReferences(type) {
+  const projectId = state.story.projectId;
+  const button = $(`#worksheet-generate-${type}`);
+  if (!state.user?.hasApiKey) return toast('Save a DeepSeek API key in Settings first.', 'error');
+  button.disabled = true;
+  try {
+    const body = type === 'actions' ? { count: Number($('#worksheet-picture-count').value) } : {};
+    const data = await api(`/api/story/${encodeURIComponent(projectId)}/worksheet/${type}/generate`, { method: 'POST', body });
+    if (state.story.projectId !== projectId) return;
+    if (type === 'actions') state.story.actionDraft = data.actions;
+    else state.story.locationDraft = data.locations;
+    renderWorksheet();
+    toast('Review the draft, then save or generate again.', 'success');
+  } catch (err) { toast(err.message || 'Could not generate references.', 'error'); }
+  finally { button.disabled = false; }
+}
+
+async function saveWorksheetReferences(type) {
+  const projectId = state.story.projectId;
+  const items = type === 'actions' ? state.story.actionDraft : state.story.locationDraft;
+  if (!items) return;
+  const button = $(`#worksheet-save-${type}`);
+  button.disabled = true;
+  try {
+    await api(`/api/story/${encodeURIComponent(projectId)}/worksheet/${type}/save`, { method: 'POST', body: { [type]: items } });
+    if (state.story.projectId !== projectId) return;
+    await loadStory(projectId);
+    toast(`${type === 'actions' ? 'Action' : 'Location'} references saved.`, 'success');
+  } catch (err) { toast(err.message || 'Could not save references.', 'error'); button.disabled = false; }
+}
+
+$('#story-generate-worksheet').addEventListener('click', () => {
+  state.story.worksheetOpen = true;
+  renderStoryState();
+  if (state.story.data) renderWorksheet();
+});
+$('#worksheet-generate-one').addEventListener('click', (event) => generateWorksheetSheet($('#worksheet-character').value, event.currentTarget));
+$('#worksheet-generate-all').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  const story = state.story.data;
+  const characters = (story.referenceSource?.characterReferences || []).map((item) =>
+    story.characters.find((character) => character.name === item.name)).filter(Boolean);
+  for (const character of characters) {
+    if (state.story.projectId !== story.projectId) break;
+    await generateWorksheetSheet(character.id, button);
+  }
+  button.disabled = false;
+});
+['actions', 'locations'].forEach((type) => {
+  $(`#worksheet-generate-${type}`).addEventListener('click', () => generateWorksheetReferences(type));
+  $(`#worksheet-save-${type}`).addEventListener('click', () => saveWorksheetReferences(type));
+});
 $('#story-project').addEventListener('change', (event) => {
   if (state.story.dirty && !confirm('Discard unsaved story changes?')) {
     event.target.value = state.story.projectId;
@@ -2585,6 +2769,9 @@ $('#story-project').addEventListener('change', (event) => {
   state.story.projectId = event.target.value;
   state.story.editor = null;
   state.story.sheetCharacterId = '';
+  state.story.worksheetOpen = true;
+  state.story.actionDraft = null;
+  state.story.locationDraft = null;
   loadStory(state.story.projectId);
 });
 $('#story-refresh').addEventListener('click', () => loadStory(state.story.projectId));
@@ -3351,6 +3538,15 @@ function renderChat() {
       bubble.className = 'chat-bubble';
       bubble.textContent = m.content;
       row.appendChild(bubble);
+      if (state.chat.mode === 'guide' && m.role === 'assistant') {
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'chat-copy';
+        copy.textContent = 'Copy';
+        copy.setAttribute('aria-label', 'Copy guide response');
+        copy.addEventListener('click', () => copyToClipboard(m.content, 'Response'));
+        row.appendChild(copy);
+      }
       list.appendChild(row);
     });
   }
@@ -4910,13 +5106,13 @@ function renderGenerationPrompts() {
   });
 }
 
-async function copyToClipboard(text) {
+async function copyToClipboard(text, label = 'Prompt') {
   if (!text || !text.trim()) return toast('Nothing to copy.', 'error');
 
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
-      toast('Prompt copied.', 'success');
+      toast(`${label} copied.`, 'success');
       return;
     }
     throw new Error('Clipboard API unavailable');
@@ -4934,7 +5130,7 @@ async function copyToClipboard(text) {
       copied = false;
     }
     temp.remove();
-    toast(copied ? 'Prompt copied.' : 'Could not copy the prompt.', copied ? 'success' : 'error');
+    toast(copied ? `${label} copied.` : `Could not copy the ${label.toLowerCase()}.`, copied ? 'success' : 'error');
   }
 }
 
