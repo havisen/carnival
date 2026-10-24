@@ -5,10 +5,9 @@ Development changes are reviewed in GitHub branches and pull requests. See
 and [COST_CONTROLS.md](COST_CONTROLS.md) for reviewer caching and usage verification.
 GitHub Actions runs the mock-provider test suite on pull requests and `main`.
 
-The production app runs as a **DirectAdmin Node.js app** with `server.js` as the
-startup file. After deploying changed runtime files, restart that Node.js app
-and refresh the browser. Preserve the production database and encryption secret.
-The source checkout's `npm start` command is for running an app process directly.
+Run the app locally with **Node 24 or newer** and `npm start`. After updating
+runtime files, restart the app and refresh the browser. Preserve the database
+and encryption secret.
 
 A self-contained web app with six tabs:
 
@@ -26,7 +25,7 @@ user.
 
 ## Requirements
 
-- **Node.js 23.4 or newer** (Node 24 LTS+ recommended) for the built-in
+- **Node.js 24 or newer** for the built-in
   `node:sqlite` module. There are no npm dependencies.
 - A modern browser.
 - Optional: a **BytePlus ModelArk API key** for Seedream 5.0 Pro / 4.5 scene images.
@@ -40,6 +39,36 @@ node server.js
 ```
 
 Then open **http://localhost:3000**.
+
+## Debugging generations with Track
+
+Open **http://localhost:3000/track/** or click **Track** in the app header.
+The page uses your existing Carnival sign-in and updates every two seconds.
+
+- Browse incoming app API requests and outgoing DeepSeek, OpenAI-compatible,
+  Anthropic, BytePlus, and generated-image download requests, including failures.
+- Inspect prompts, raw provider replies (including reasoning, finish reasons, and
+  token usage when supplied), final app responses, headers, status codes, request
+  and response sizes, elapsed time, time to response headers, and network errors.
+- Search payloads, models, project IDs, URLs, and errors; filter by direction and
+  status; browse older pages; pause updates; or export a selected request as JSON.
+- Select **Show all calls in this generation** to correlate a browser request
+  with its provider calls. App responses also include an `X-Trace-Id` header.
+
+Tracing starts with this update; earlier request payloads cannot be recovered.
+History persists in the `request_traces` table of your existing SQLite database
+and is isolated by account. Pending records become **interrupted** after a restart.
+Tracker polling is excluded. Anonymous requests without an authenticated account
+are not retained; successful sign-ins and registrations are recorded.
+
+Passwords, API keys, cookies, authorization values, and signed URL credentials
+are redacted. Image bytes are omitted, and captured payloads are limited to
+256K characters per body (large app responses above 2 MiB are omitted).
+Prompts and provider output are retained for debugging, so history grows with use
+and should be treated as part of your local project data. Network details are
+application-level timings and headers, not a packet capture or DNS/TLS breakdown.
+
+## Validation
 
 Run the automated Library/API checks with:
 
