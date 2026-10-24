@@ -885,13 +885,13 @@ const SINGLE_SCENE_GENERATION_SYSTEM_PROMPT = `${GENERATION_SYSTEM_RULES} Return
 
 const CHAT_SYSTEM_PROMPTS = {
   guide: [
-    'You are a concise workflow guide inside the DeviTeam project app.',
+    'You are a concise workflow guide inside the Carnival project app.',
     'Guide the user step by step through the workflow: Idea → Reference Stage → Story Workspace → Generation Stage → Review → Done.',
     'Use the provided project context. Tell the user the next concrete action, and answer their questions directly.',
     'Never claim that any content has been reviewed, approved, or published.',
   ].join(' '),
   reviewer: [
-    'You are a review assistant inside the DeviTeam project app.',
+    'You are a review assistant inside the Carnival project app.',
     'Review the provided project content (reference material, story brief, characters, locations, style, scenes, and prompts) for continuity, completeness, consistency, and quality.',
     'Point out concrete gaps, contradictions, and missing approvals with specific examples.',
     'Never claim that content has been approved or published; approval is a separate human action.',
@@ -934,7 +934,7 @@ const REVIEW_BOXES = new Map([
 ]);
 
 const REVIEW_BATCH_SYSTEM_PROMPT = [
-  'You are a meticulous content reviewer inside the DeviTeam project app.',
+  'You are a meticulous content reviewer inside the Carnival project app.',
   'You review a batch of fields from one section, using the supplied project context to judge completeness, internal consistency, continuity, and fitness for image generation.',
   'Return ONLY valid JSON with this exact shape:',
   '{"reviews":[{"id":"<field id>","verdict":"pass"|"fail","summary":"one or two sentences","findings":[{"severity":"error"|"warning"|"info","message":"specific issue"}],"suggestions":["specific improvement"]}, ...]}',
@@ -4240,7 +4240,7 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  Project Workflow App v${APP_VERSION} running:`);
+  console.log(`\n  Carnival App v${APP_VERSION} running:`);
   console.log(`  ➜  http://localhost:${PORT}`);
   console.log(`  ➜  database: ${db.DB_PATH}\n`);
 });

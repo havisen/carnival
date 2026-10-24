@@ -1,4 +1,4 @@
-# Project Workflow
+# Carnival
 
 Development changes are reviewed in GitHub branches and pull requests. See
 [AGENTS.md](AGENTS.md) for the code map and guidance for focused parallel work,
