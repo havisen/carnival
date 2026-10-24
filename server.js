@@ -16,6 +16,7 @@ const fieldReviewStore = require('./fieldreviews').init(db.db);
 const { init: initApiUsage, normalizeUsage } = require('./apiusage');
 const apiUsageStore = initApiUsage(db.db);
 const requestTracker = require('./track').init(db.db);
+const generationReviews = require('./generationreviews').init(db.db);
 
 security.init(db.DATA_DIR);
 
@@ -111,6 +112,15 @@ function fail(status, message, code) {
 }
 
 function sendJSON(res, status, payload) {
+  if (res.generationReview && status >= 200 && status < 300) {
+    const { userId, id } = res.generationReview;
+    const result = {};
+    // Keep unsaved previews available after a refresh; saved outputs live in their domain stores.
+    for (const key of ['ideas', 'actions', 'locations', 'sheet', 'image']) {
+      if (payload[key]) result[key] = payload[key];
+    }
+    payload.generationReview = generationReviews.complete(userId, id, result);
+  }
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -205,9 +215,10 @@ function detectImageType(buffer) {
 }
 
 async function readJSON(req) {
+  if (req.parsedJSON) return req.parsedJSON;
   const raw = await readBody(req);
   requestTracker.requestBody(raw);
-  if (!raw) return {};
+  if (!raw) return (req.parsedJSON = {});
   let parsed;
   try {
     parsed = JSON.parse(raw);
@@ -218,6 +229,7 @@ async function readJSON(req) {
     fail(400, 'Invalid JSON body.');
   }
   requestTracker.requestBody(parsed);
+  req.parsedJSON = parsed;
   return parsed;
 }
 
@@ -3595,6 +3607,40 @@ function handleStoryPromptPromote(req, res, promptId) {
   }
 }
 
+// Generation locks cover every entry point for a result, including other tabs.
+async function runGeneration(req, res, kind, handler, projectId, target = '') {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  projectId = kind === 'ideas' ? '' : (projectId || body.projectId || '');
+  if (kind !== 'ideas' && typeof projectId !== 'string') fail(400, 'Invalid project ID.');
+  if (kind !== 'ideas' && !db.getProject(session.user_id, projectId)) fail(404, 'Project not found.');
+  let review;
+  try { review = generationReviews.begin(session.user_id, projectId, kind, target); }
+  catch (err) { if (err.status) fail(err.status, err.message, err.code); throw err; }
+  res.generationReview = { userId: session.user_id, id: review.id };
+  try {
+    return await handler();
+  } finally {
+    generationReviews.fail(session.user_id, review.id);
+  }
+}
+
+async function handleGenerationDecision(req, res, id) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  const review = generationReviews.get(session.user_id, id);
+  if (!review) fail(404, 'Generated result not found.');
+  if (review.status !== 'pending') fail(409, 'This result is not awaiting a decision.');
+  if (!['approved', 'disapproved'].includes(body.decision)) fail(400, 'Choose approved or disapproved.');
+  // Accepting a sheet uses the existing canonical-sheet action. Publication remains separate.
+  if (review.kind === 'sheet' && body.decision === 'approved') {
+    const sheet = storyStore.updateCharacterSheetStatus(session.user_id, review.result.sheet.id, 'final');
+    if (!sheet) fail(404, 'Character sheet not found.');
+  }
+  const decided = generationReviews.decide(session.user_id, id, body.decision);
+  return sendJSON(res, 200, { generationReview: decided });
+}
+
 async function handleStorySheetGenerate(req, res, projectId, characterId) {
   const session = requireUser(req);
   const body = await readJSON(req);
@@ -3690,6 +3736,8 @@ function handleStorySheetPromote(req, res, sheetId) {
   try {
     const sheet = storyStore.updateCharacterSheetStatus(session.user_id, sheetId, 'final');
     if (!sheet) fail(404, 'Character sheet not found.');
+    const pending = generationReviews.list(session.user_id).find((item) => item.kind === 'sheet' && item.result.sheet?.id === sheetId);
+    if (pending?.status === 'pending') generationReviews.decide(session.user_id, pending.id, 'approved');
     return sendJSON(res, 200, { sheet });
   } catch (err) {
     storyFail(err);
@@ -3790,6 +3838,8 @@ async function handleWorksheetSave(req, res, projectId, type) {
   const worksheet = type === 'actions'
     ? storyStore.saveWorksheetActions(session.user_id, project.id, items)
     : storyStore.saveWorksheetLocations(session.user_id, project.id, items);
+  const pending = generationReviews.list(session.user_id).find((item) => item.projectId === project.id && item.kind === type);
+  if (pending?.status === 'pending') generationReviews.decide(session.user_id, pending.id, 'approved');
   return sendJSON(res, 200, { worksheet });
 }
 
@@ -3987,9 +4037,20 @@ async function handleApi(req, res, pathname) {
     fail(405, 'Method not allowed.');
   }
 
+  if (pathname === '/api/generation/reviews') {
+    if (method !== 'GET') fail(405, 'Method not allowed.');
+    const session = requireUser(req);
+    return sendJSON(res, 200, { reviews: generationReviews.list(session.user_id) });
+  }
+  const generationDecisionMatch = pathname.match(/^\/api\/generation\/reviews\/([A-Za-z0-9_-]{1,80})$/);
+  if (generationDecisionMatch) {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return handleGenerationDecision(req, res, generationDecisionMatch[1]);
+  }
+
   if (pathname === '/api/generate') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleGenerate(req, res);
+    return runGeneration(req, res, 'ideas', () => handleGenerate(req, res));
   }
 
   if (pathname === '/api/chat') {
@@ -4009,22 +4070,22 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/reference') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleReference(req, res);
+    return runGeneration(req, res, 'reference', () => handleReference(req, res));
   }
 
   if (pathname === '/api/generation/prompts') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleGenerationPrompts(req, res);
+    return runGeneration(req, res, 'prompts', () => handleGenerationPrompts(req, res));
   }
 
   if (pathname === '/api/generation/prompt') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleGenerationPrompt(req, res);
+    return runGeneration(req, res, 'prompts', () => handleGenerationPrompt(req, res));
   }
 
   if (pathname === '/api/images/generate') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleGenerateImage(req, res);
+    return runGeneration(req, res, 'images', () => handleGenerateImage(req, res));
   }
 
   if (pathname === '/api/library') {
@@ -4120,7 +4181,7 @@ async function handleApi(req, res, pathname) {
   const storySheetGenerateMatch = pathname.match(/^\/api\/story\/([A-Za-z0-9_-]{1,80})\/characters\/([A-Za-z0-9_-]{1,80})\/sheets\/generate$/);
   if (storySheetGenerateMatch) {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleStorySheetGenerate(req, res, storySheetGenerateMatch[1], storySheetGenerateMatch[2]);
+    return runGeneration(req, res, 'sheet', () => handleStorySheetGenerate(req, res, storySheetGenerateMatch[1], storySheetGenerateMatch[2]), storySheetGenerateMatch[1], storySheetGenerateMatch[2]);
   }
 
   const storySheetCreateMatch = pathname.match(/^\/api\/story\/sheet-image\/([A-Za-z0-9_-]{1,80})\/([A-Za-z0-9-]+\.(?:png|jpe?g|webp))$/i);
@@ -4192,13 +4253,13 @@ async function handleApi(req, res, pathname) {
   const storyWorkspaceGenerateMatch = pathname.match(/^\/api\/story\/([A-Za-z0-9_-]{1,80})\/workspace\/generate$/);
   if (storyWorkspaceGenerateMatch) {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleStoryWorkspaceGenerate(req, res, storyWorkspaceGenerateMatch[1]);
+    return runGeneration(req, res, 'workspace', () => handleStoryWorkspaceGenerate(req, res, storyWorkspaceGenerateMatch[1]), storyWorkspaceGenerateMatch[1]);
   }
   const worksheetMatch = pathname.match(/^\/api\/story\/([A-Za-z0-9_-]{1,80})\/worksheet\/(actions|locations)\/(generate|save)$/);
   if (worksheetMatch) {
     if (method !== 'POST') fail(405, 'Method not allowed.');
     return worksheetMatch[3] === 'generate'
-      ? handleWorksheetGenerate(req, res, worksheetMatch[1], worksheetMatch[2])
+      ? runGeneration(req, res, worksheetMatch[2], () => handleWorksheetGenerate(req, res, worksheetMatch[1], worksheetMatch[2]), worksheetMatch[1])
       : handleWorksheetSave(req, res, worksheetMatch[1], worksheetMatch[2]);
   }
 
@@ -4335,7 +4396,8 @@ async function dispatch(req, res) {
   if (url.pathname.startsWith('/api/')) {
     const execute = () => Promise.resolve(handleApi(req, res, url.pathname)).catch((err) => handleError(res, err));
     // Polling the debugger must not fill its own request history.
-    if (url.pathname === '/api/track' || url.pathname.startsWith('/api/track/')) return execute();
+    if (url.pathname === '/api/track' || url.pathname.startsWith('/api/track/') ||
+        (req.method === 'GET' && url.pathname === '/api/generation/reviews')) return execute();
     return requestTracker.run(req, res, currentSession(req)?.user_id, execute);
   }
   if (req.method === 'GET' || req.method === 'HEAD') {

@@ -170,6 +170,8 @@ test('Track correlates real app requests with local provider responses, pending 
   assert.equal((await history()).total, beforePolling, 'debugger reads do not record themselves');
   assert.equal((await history('?limit=1&offset=1')).requests.length, 1);
 
+  assert.equal((await request('/api/generation/reviews/' + response.data.generationReview.id, 'POST', { decision: 'approved' })).status, 200);
+
   for (const failure of ['bad-json', 'http-error', 'reset']) {
     mode = failure;
     const before = calls;
@@ -199,7 +201,9 @@ test('Track correlates real app requests with local provider responses, pending 
   const inFlight = await history('?status=pending');
   assert.equal(inFlight.total, 2);
   release(); release = null;
-  assert.equal((await pending).status, 200);
+  const completed = await pending;
+  assert.equal(completed.status, 200);
+  assert.equal((await request('/api/generation/reviews/' + completed.data.generationReview.id, 'POST', { decision: 'approved' })).status, 200);
   assert.equal((await history('?status=pending')).total, 0);
 
   assert.equal((await request('/api/me/byteplus-key', 'PUT', { apiKey: key })).status, 200);
@@ -228,6 +232,7 @@ test('Track correlates real app requests with local provider responses, pending 
       if (entry.provider === 'image-download') { assert.equal(entry.responseBytes, png.length); assert.equal(entry.responseBody, '[binary body omitted]'); }
       if (entry.provider === 'byteplus' && imageMode === 'image-base64') assert.equal(entry.responseBody.data[0].b64_json, '[image data omitted]');
     }
+    assert.equal((await request('/api/generation/reviews/' + response.data.generationReview.id, 'POST', { decision: 'approved' })).status, 200);
   }
 
   // Check persisted documents as well as API responses for secret leakage.

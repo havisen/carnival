@@ -93,10 +93,18 @@ test('scene regeneration accepts the system array format and preserves saved pro
   assert.match(requests[0].messages[0].content, /\{"prompt":"/);
   assert.doesNotMatch(requests[0].messages[0].content, /\{"prompts":/);
 
+  const blockedBatch = await request('/api/generation/prompts', 'POST', { projectId, model: 'deepseek-v4-pro' });
+  assert.equal(blockedBatch.status, 409, 'batch cannot replace an undecided single-scene result');
+  assert.equal(requests.length, 1, 'blocked alias does not call the provider');
+
+  const approve = async () => assert.equal((await request('/api/generation/reviews/' + response.data.generationReview.id, 'POST', { decision: 'approved' })).status, 200);
+  await approve();
+
   for (const value of [{ prompt: 'One direct prompt.' }, { prompts: [{ prompt: 'One wrapped prompt.' }] }]) {
     answer = value;
     response = await regenerate();
     assert.equal(response.status, 200, JSON.stringify(response.data));
+    await approve();
   }
   const getProject = async () => {
     const response = await request('/api/projects');

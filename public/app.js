@@ -228,7 +228,7 @@ class ApiError extends Error {
   }
 }
 
-async function api(path, { method = 'GET', body } = {}) {
+async function apiRequest(path, { method = 'GET', body } = {}) {
   let res;
   try {
     res = await fetch(path, {
@@ -296,6 +296,7 @@ function hideBoot() {
 }
 
 function showAuth() {
+  resetGenerationReviews();
   state.user = null;
   hideBoot();
   $('#app-shell').classList.add('hidden');
@@ -334,6 +335,7 @@ function expireSession() {
 
 async function enterApp() {
   showApp();
+  await loadGenerationReviews();
   try {
     await loadProjects();
   } catch (err) {
@@ -1987,6 +1989,8 @@ function renderWorksheet() {
   if (!story) return;
   const source = story.referenceSource || {};
   const saved = story.worksheet || { actions: [], locations: [] };
+  state.story.actionDraft = generationReviewFor(generationScope('actions', story.projectId))?.result.actions || null;
+  state.story.locationDraft = generationReviewFor(generationScope('locations', story.projectId))?.result.locations || null;
   const sourceList = $('#story-source-references');
   sourceList.replaceChildren(
     worksheetText('Name', source.name), worksheetText('Idea', source.idea),
@@ -2030,7 +2034,7 @@ function renderWorksheet() {
       img.alt = `${item.name} character reference sheet`;
       img.src = `/api/story/sheet-image/${encodeURIComponent(story.projectId)}/${encodeURIComponent(sheet.file)}`;
       card.appendChild(img);
-      if (sheet.status !== 'final') {
+      if (sheet.status !== 'final' && !generationReviewFor(generationScope('sheet', story.projectId, character.id))) {
         const add = document.createElement('button');
         add.type = 'button';
         add.className = 'btn btn-primary btn-sm';
@@ -2045,12 +2049,13 @@ function renderWorksheet() {
         card.appendChild(add);
       }
     });
+    generationDecisionControls(card, generationScope('sheet', story.projectId, character.id));
     if (latest) {
       const again = document.createElement('button');
       again.type = 'button';
       again.className = 'btn btn-secondary btn-sm';
       again.textContent = 'Generate again';
-      again.disabled = !item.referenceMaterial;
+      bindGenerationButton(again, generationScope('sheet', story.projectId, character.id), Boolean(item.referenceMaterial));
       again.addEventListener('click', () => generateWorksheetSheet(character.id, again));
       card.appendChild(again);
     }
@@ -2071,6 +2076,7 @@ function renderWorksheet() {
   $('#worksheet-save-locations').classList.toggle('hidden', !state.story.locationDraft);
   $('#worksheet-generate-locations').disabled = !saved.actions.length;
   if (saved.actions.length && !state.story.actionDraft) $('#worksheet-picture-count').value = saved.actions.length;
+  refreshGenerationLocks();
 }
 
 function renderWorksheetList(type, items) {
@@ -2486,7 +2492,7 @@ function renderStorySheets() {
 
     const actions = document.createElement('div');
     actions.className = 'story-form-actions';
-    if (sheet.status !== 'final') {
+    if (sheet.status !== 'final' && !generationReviewFor(generationScope('sheet', story.projectId, characterId))) {
       const promote = document.createElement('button');
       promote.type = 'button';
       promote.className = 'btn btn-secondary btn-sm';
@@ -2501,6 +2507,9 @@ function renderStorySheets() {
         }
       });
       actions.appendChild(promote);
+    }
+    if (generationReviewFor(generationScope('sheet', story.projectId, characterId))?.result.sheet?.id === sheet.id) {
+      generationDecisionControls(actions, generationScope('sheet', story.projectId, characterId));
     }
     card.append(head, img, actions);
     container.appendChild(card);
@@ -2568,6 +2577,7 @@ async function generateStorySheet() {
   } finally {
     button.disabled = false;
     button.textContent = '✨ Generate character sheet';
+    refreshGenerationLocks();
   }
 }
 
@@ -2667,6 +2677,7 @@ async function generateStoryWorkspace(replace = false) {
       method: 'POST',
       body: { replace },
     });
+    if (state.story.projectId !== projectId) return;
     state.story.data = data.story;
     renderStory();
     refreshSidebarStory(true);
@@ -2693,20 +2704,22 @@ async function generateStoryWorkspace(replace = false) {
       button.disabled = false;
       button.textContent = '✨ Generate workspace from reference';
     }
+    refreshGenerationLocks();
   }
 
   if (retryReplace) return generateStoryWorkspace(true);
 }
 
 async function generateWorksheetSheet(characterId, button) {
+  const projectId = state.story.projectId;
   if (!state.user?.hasBytePlusKey) return toast('Save a BytePlus API key in Settings first.', 'error');
   button.disabled = true;
   try {
-    await api(`/api/story/${encodeURIComponent(state.story.projectId)}/characters/${encodeURIComponent(characterId)}/sheets/generate`, { method: 'POST' });
-    await loadStory(state.story.projectId);
-    toast('Sheet ready to review. Add it or generate again.', 'success');
+    await api(`/api/story/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterId)}/sheets/generate`, { method: 'POST' });
+    if (state.story.projectId === projectId) await loadStory(projectId);
+    toast('Sheet ready to review. Add or disapprove it before generating again.', 'success');
   } catch (err) { toast(err.message || 'Could not generate sheet.', 'error'); }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; refreshGenerationLocks(); }
 }
 
 async function generateWorksheetReferences(type) {
@@ -2721,9 +2734,9 @@ async function generateWorksheetReferences(type) {
     if (type === 'actions') state.story.actionDraft = data.actions;
     else state.story.locationDraft = data.locations;
     renderWorksheet();
-    toast('Review the draft, then save or generate again.', 'success');
+    toast('Approve or disapprove the draft before generating again.', 'success');
   } catch (err) { toast(err.message || 'Could not generate references.', 'error'); }
-  finally { button.disabled = false; }
+  finally { button.disabled = false; refreshGenerationLocks(); }
 }
 
 async function saveWorksheetReferences(type) {
@@ -2735,6 +2748,7 @@ async function saveWorksheetReferences(type) {
   try {
     await api(`/api/story/${encodeURIComponent(projectId)}/worksheet/${type}/save`, { method: 'POST', body: { [type]: items } });
     if (state.story.projectId !== projectId) return;
+    await loadGenerationReviews();
     await loadStory(projectId);
     if (type === 'actions') { state.story.locationDraft = null; state.story.actionDraft = null; }
     else state.story.locationDraft = null;
@@ -2748,9 +2762,12 @@ $('#story-generate-worksheet').addEventListener('click', () => {
   renderStoryState();
   if (state.story.data) renderWorksheet();
 });
+$('#worksheet-character').addEventListener('change', refreshGenerationLocks);
 $('#worksheet-generate-one').addEventListener('click', (event) => generateWorksheetSheet($('#worksheet-character').value, event.currentTarget));
 $('#worksheet-generate-all').addEventListener('click', async (event) => {
   const button = event.currentTarget;
+  if (button.disabled) return;
+  button.dataset.generating = 'true';
   button.disabled = true;
   const story = state.story.data;
   const characters = (story.referenceSource?.characterReferences || []).map((item) =>
@@ -2759,7 +2776,8 @@ $('#worksheet-generate-all').addEventListener('click', async (event) => {
     if (state.story.projectId !== story.projectId) break;
     await generateWorksheetSheet(character.id, button);
   }
-  if (state.story.projectId === story.projectId) button.disabled = false;
+  button.dataset.generating = 'false';
+  refreshGenerationLocks();
 });
 ['actions', 'locations'].forEach((type) => {
   $(`#worksheet-generate-${type}`).addEventListener('click', () => generateWorksheetReferences(type));
@@ -2821,6 +2839,7 @@ $('#story-save-scenes').addEventListener('click', saveStoryScenes);
 $('#story-sheet-character').addEventListener('change', (event) => {
   state.story.sheetCharacterId = event.target.value;
   renderStorySheets();
+  refreshGenerationLocks();
 });
 $('#story-generate-sheet').addEventListener('click', generateStorySheet);
 $('#story-content').addEventListener('input', storyMarkDirty);
@@ -3870,6 +3889,7 @@ async function generateIdeas() {
     generateBtn.disabled = false;
     $('#generate-label').textContent = '✨ Generate ideas';
     $('#generating').classList.add('hidden');
+    refreshGenerationLocks();
   }
 }
 
@@ -4419,6 +4439,7 @@ function setReferenceButtons(enabled) {
   $('#ref-save').disabled = !enabled;
   $('#ref-regenerate').disabled = !enabled;
   $('#ref-use-guide').disabled = !enabled;
+  refreshGenerationLocks();
 }
 
 function renderReferenceCharacterMaterial(references) {
@@ -4637,6 +4658,7 @@ async function generateReference(replaceWorkspace = false) {
       state.generation.images = [];
     }
 
+    if (state.reference.projectId !== projectId) return;
     state.stageFilter = 'Reference Stage';
     renderStageTabs();
     setReferenceOutput(data.referenceMaterial || '', true);
@@ -4678,6 +4700,7 @@ async function generateReference(replaceWorkspace = false) {
     setReferenceButtons(Boolean(state.reference.projectId));
     $('#ref-generate-label').textContent = '✨ Generate reference material';
     $('#ref-generating').classList.add('hidden');
+    refreshGenerationLocks();
   }
 
   if (retryReplaceWorkspace) return generateReference(true);
@@ -4772,6 +4795,7 @@ function setGenerationButtons(enabled) {
   $('#gen-add-scene').disabled = !enabled;
   $('#gen-save-scenes').disabled = !enabled;
   $('#gen-generate-prompts').disabled = !enabled;
+  refreshGenerationLocks();
 }
 
 function selectGenerationProject(id) {
@@ -5109,8 +5133,11 @@ function renderGenerationPrompts() {
       generateSceneImage(scene, entry, imageButton);
     });
 
+    bindGenerationButton(card.querySelector('[data-action="regen"]'), generationScope('prompts', state.generation.projectId));
+    bindGenerationButton(imageButton, generationScope('images', state.generation.projectId));
     wrap.appendChild(card);
   });
+  refreshGenerationLocks();
 }
 
 async function copyToClipboard(text, label = 'Prompt') {
@@ -5223,6 +5250,7 @@ async function generateGenerationPrompts() {
     const updated = data.project;
     const index = state.projects.findIndex((p) => p.id === updated.id);
     if (index >= 0) state.projects[index] = updated;
+    if (state.generation.projectId !== projectId) return;
     state.generation.scenes = cloneJson(updated.scenes || []);
     state.generation.prompts = cloneJson(updated.generationPrompts || []);
     state.generation.images = cloneJson(updated.sceneImages || []);
@@ -5241,6 +5269,7 @@ async function generateGenerationPrompts() {
   } finally {
     finishProcess(processId);
     button.disabled = false;
+    refreshGenerationLocks();
   }
 }
 
@@ -5261,6 +5290,7 @@ async function regenerateScenePrompt(scene, button) {
     const updated = data.project;
     const index = state.projects.findIndex((p) => p.id === updated.id);
     if (index >= 0) state.projects[index] = updated;
+    if (state.generation.projectId !== projectId) return;
     state.generation.scenes = cloneJson(updated.scenes || []);
     state.generation.prompts = cloneJson(updated.generationPrompts || []);
     state.generation.images = cloneJson(updated.sceneImages || []);
@@ -5273,6 +5303,7 @@ async function regenerateScenePrompt(scene, button) {
     toast(err.message || 'Could not regenerate the prompt.', 'error');
   } finally {
     finishProcess(processId);
+    refreshGenerationLocks();
   }
 }
 
@@ -5368,6 +5399,7 @@ async function generateSceneImage(scene, entry, button) {
     if (index >= 0) {
       state.projects[index].sceneImages = cloneJson(data.project.sceneImages || []);
     }
+    if (state.generation.projectId !== projectId) return;
     state.generation.images = cloneJson(data.project.sceneImages || []);
     renderGenerationPrompts();
     $('#gen-prompt-hint').textContent = `Image generated for "${scene.title}".`;
@@ -5388,6 +5420,7 @@ async function generateSceneImage(scene, entry, button) {
     toast(err.message || 'Could not generate the image.', 'error');
   } finally {
     finishProcess(processId);
+    refreshGenerationLocks();
   }
 }
 
