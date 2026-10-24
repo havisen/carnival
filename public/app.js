@@ -2778,11 +2778,14 @@ $('#story-project').addEventListener('change', (event) => {
   state.story.locationDraft = null;
   loadStory(state.story.projectId);
 });
-$('#story-refresh').addEventListener('click', () => loadStory(state.story.projectId));
+const storyRefresh = $('#story-refresh');
+if (storyRefresh) storyRefresh.addEventListener('click', () => loadStory(state.story.projectId));
 $('#story-retry').addEventListener('click', () => loadStory(state.story.projectId));
-$('#story-generate-workspace').addEventListener('click', () => generateStoryWorkspace(false));
+const storyGenerateWorkspace = $('#story-generate-workspace');
+if (storyGenerateWorkspace) storyGenerateWorkspace.addEventListener('click', () => generateStoryWorkspace(false));
 $('#story-save-brief').addEventListener('click', saveStoryBrief);
-$('#story-validate').addEventListener('click', async () => {
+const storyValidate = $('#story-validate');
+if (storyValidate) storyValidate.addEventListener('click', async () => {
   try {
     const { warnings } = await api(`/api/story/${encodeURIComponent(state.story.projectId)}/validate`);
     state.story.data.warnings = warnings;
