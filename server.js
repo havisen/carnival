@@ -12,6 +12,9 @@ const storyModule = require('./story');
 const { normalizeStoryWorkspace } = storyModule;
 const storyStore = storyModule.init(db.db, db.DB_PATH);
 const reviewStore = require('./reviews').init(db.db, storyStore, db.DB_PATH);
+const fieldReviewStore = require('./fieldreviews').init(db.db);
+const { init: initApiUsage, normalizeUsage } = require('./apiusage');
+const apiUsageStore = initApiUsage(db.db);
 
 security.init(db.DATA_DIR);
 
@@ -869,15 +872,16 @@ const WORKSPACE_SYSTEM_PROMPT = [
   'Use only the supplied characters, in the supplied order, with their exact names and genders. Return valid JSON only.',
 ].join(' ');
 
-const GENERATION_SYSTEM_PROMPT = [
+const GENERATION_SYSTEM_RULES = [
   'You are an expert photorealistic image-prompt writer and visual continuity supervisor.',
   'For each scene, write one detailed image-generation prompt suitable for a photorealistic render.',
   'Each prompt must specify the characters present and their appearance, clothing, action, environment, lighting, and camera framing or lens.',
   'Keep appearances, wardrobe, locations, and props consistent with the reference material.',
   'Prefer realistic, casual, everyday moments and photographic realism.',
-  'Return ONLY valid JSON in the form {"prompts": ["prompt for scene 1", "prompt for scene 2", ...]} with exactly one prompt per scene, in the same order as the scenes.',
   'Do not use code fences, numbering, or commentary outside the JSON.',
 ].join(' ');
+const GENERATION_SYSTEM_PROMPT = `${GENERATION_SYSTEM_RULES} Return ONLY valid JSON in the form {"prompts": ["prompt for scene 1", "prompt for scene 2", ...]} with exactly one prompt per scene, in the same order as the scenes.`;
+const SINGLE_SCENE_GENERATION_SYSTEM_PROMPT = `${GENERATION_SYSTEM_RULES} Return ONLY valid JSON in the form {"prompt":"one complete image-generation prompt"} for the supplied scene.`;
 
 const CHAT_SYSTEM_PROMPTS = {
   guide: [
@@ -897,7 +901,7 @@ const CHAT_SYSTEM_PROMPTS = {
 const REVIEW_BOXES = new Map([
   ['scene-prompts', {
     label: 'Scene Prompts',
-    criteria: 'Every scene prompt must be self-contained and name the characters present, their appearance and wardrobe, the action, environment, lighting, and camera framing. It must agree with the story reference, scene outline, and other prompts, and must be specific enough to generate a consistent photorealistic image.',
+    criteria: 'Every scene prompt must be self-contained and name the characters present, their appearance and wardrobe, the action, environment, lighting, and camera framing. It must agree with the supplied story reference, continuity summaries, and scene outline, and must be specific enough to generate a consistent photorealistic image.',
   }],
   ['scene-outline', {
     label: 'Scene Outline',
@@ -929,19 +933,24 @@ const REVIEW_BOXES = new Map([
   }],
 ]);
 
-const REVIEW_FIELD_SYSTEM_PROMPT = [
+const REVIEW_BATCH_SYSTEM_PROMPT = [
   'You are a meticulous content reviewer inside the DeviTeam project app.',
-  'You review exactly one field at a time, using the supplied project context to judge completeness, internal consistency, continuity, and fitness for image generation.',
+  'You review a batch of fields from one section, using the supplied project context to judge completeness, internal consistency, continuity, and fitness for image generation.',
   'Return ONLY valid JSON with this exact shape:',
-  '{"verdict":"pass"|"fail","summary":"one or two sentences","findings":[{"severity":"error"|"warning"|"info","message":"specific issue"}],"suggestions":["specific improvement"]}',
-  'Use "pass" only when the field is complete and consistent enough to use as-is. Use "fail" when it needs a correction.',
+  '{"reviews":[{"id":"<field id>","verdict":"pass"|"fail","summary":"one or two sentences","findings":[{"severity":"error"|"warning"|"info","message":"specific issue"}],"suggestions":["specific improvement"]}, ...]}',
+  'Return exactly one entry per supplied field id, in the same order. Copy each field id exactly as supplied.',
+  'Use "pass" only when a field is complete and consistent enough to use as-is. Use "fail" when it needs a correction.',
   'Treat approval and publication status as out of scope: never fail a field only because a linked character, location, or style is unapproved.',
   'Be concrete and concise. Do not invent facts that are not in the supplied content.',
+  'Review each field independently against the shared context. Other fields in the batch are not authoritative references. Context excerpts can omit details; state gaps rather than claiming to have checked omitted material.',
   'Never claim that anything was reviewed, approved, or published by a human; this is an automated check, not an approval.',
 ].join(' ');
 
 const REVIEW_CONTEXT_MAX_CHARS = 24000;
 const REVIEW_FIELD_MAX_CHARS = 16000;
+const REVIEW_BATCH_MAX_CHARS = 40000;
+const REVIEW_BATCH_MAX_FIELDS = 8;
+const reviewsInFlight = new Map();
 
 function buildCharacterSheetPrompt(character, story) {
   const parts = [];
@@ -1010,7 +1019,7 @@ function buildChatContext(userId, project) {
 }
 
 // ---------------------------------------------------------------------------
-// Reviewer bot: one card/box at a time, one field per review
+// Reviewer bot: bounded batches with persistent results for unchanged inputs
 // ---------------------------------------------------------------------------
 
 function reviewValue(value) {
@@ -1119,49 +1128,48 @@ function reviewerFieldsFor(userId, project, boxId) {
   return fields.slice(0, 60);
 }
 
-function buildReviewerContext(project, story) {
+function buildReviewerContext(project, story, boxId) {
+  const excerpt = (value, limit) => {
+    const text = reviewValue(value);
+    return text.length > limit ? `${text.slice(0, limit)} [excerpt]` : text;
+  };
+  const summary = (record, keys, limit) => excerpt(Object.fromEntries(
+    keys.filter((key) => reviewValue(record[key])).map((key) => [key, record[key]])
+  ), limit);
   const lines = [
     `Project title: ${project.title}`,
-    `Stage: ${project.stage} · Status: ${project.status} · Priority: ${project.priority}`,
   ];
-  if (project.idea) lines.push(`Idea:\n${project.idea}`);
-  if (project.description) lines.push(`Description:\n${project.description}`);
-  if (project.referenceMaterial) {
-    lines.push(`Reference material:\n${String(project.referenceMaterial).slice(0, 12000)}`);
+  if (project.idea) lines.push(`Idea:\n${excerpt(project.idea, 1000)}`);
+  if (project.description) lines.push(`Description:\n${excerpt(project.description, 1500)}`);
+  if (project.referenceMaterial && boxId !== 'reference-material') {
+    lines.push(`Reference material excerpt:\n${excerpt(project.referenceMaterial, 4000)}`);
   }
 
   if (story.brief) {
-    lines.push(`Story brief:\n${reviewRecordText(story.brief)}`);
+    lines.push(`Story brief:\n${excerpt(reviewRecordText(story.brief), 2500)}`);
   }
-  if (Array.isArray(story.characters) && story.characters.length) {
-    lines.push(`Characters:\n${story.characters.map((character) => reviewRecordText(character)).join('\n\n')}`);
+  const sceneReview = boxId === 'scene-prompts' || boxId === 'scene-outline';
+  if (sceneReview && Array.isArray(story.characters) && story.characters.length) {
+    lines.push(`Character continuity summaries:\n${excerpt(story.characters.map((character) => (
+      summary(character, ['name', 'age', 'gender', 'appearance', 'wardrobe', 'continuityNotes'], 700)
+    )).join('\n'), 4000)}`);
   }
-  if (Array.isArray(story.locations) && story.locations.length) {
-    lines.push(`Locations:\n${story.locations.map((location) => reviewRecordText(location)).join('\n\n')}`);
+  if (sceneReview && Array.isArray(story.locations) && story.locations.length) {
+    lines.push(`Location summaries:\n${excerpt(story.locations.map((location) => (
+      summary(location, ['name', 'description', 'layout', 'lighting', 'props'], 400)
+    )).join('\n'), 1800)}`);
   }
-  if (Array.isArray(story.styles) && story.styles.length) {
-    lines.push(`Styles:\n${story.styles.map((style) => reviewRecordText(style)).join('\n\n')}`);
+  if (sceneReview && Array.isArray(story.styles) && story.styles.length) {
+    lines.push(`Style summaries:\n${excerpt(story.styles.map((style) => (
+      summary(style, ['name', 'description', 'guidance', 'exclusions'], 500)
+    )).join('\n'), 1800)}`);
   }
 
   const scenes = Array.isArray(project.scenes) ? project.scenes : [];
-  if (scenes.length) {
-    lines.push(`Scene order:\n${scenes.map((scene, index) => (
-      `Scene ${index + 1}: ${scene.title || 'Untitled'} | ${scene.location || 'No location'} | ${(scene.characters || []).join(', ') || 'No characters'} | ${scene.action || 'No action'}`
-    )).join('\n')}`);
-  }
-
-  const prompts = Array.isArray(project.generationPrompts) ? project.generationPrompts : [];
-  if (prompts.length) {
-    const byId = new Map(scenes.map((scene) => [scene.id, scene]));
-    lines.push(`Other scene prompts (summaries):\n${prompts.map((prompt) => {
-      const scene = byId.get(prompt.sceneId);
-      return `${scene ? scene.title : prompt.sceneId}: ${String(prompt.prompt || '').slice(0, 500)}`;
-    }).join('\n')}`);
-  }
-
-  const warnings = Array.isArray(story.warnings) ? story.warnings : [];
-  if (warnings.length) {
-    lines.push(`Saved continuity warnings:\n${warnings.slice(0, 20).map((warning) => `- ${warning.message}`).join('\n')}`);
+  if ((sceneReview || boxId === 'locations') && scenes.length) {
+    lines.push(`Scene order:\n${excerpt(scenes.map((scene, index) => (
+      `Scene ${index + 1}: ${summary(scene, ['title', 'location', 'characters', 'action'], 350)}`
+    )).join('\n'), 4000)}`);
   }
 
   return lines.join('\n\n').slice(0, REVIEW_CONTEXT_MAX_CHARS);
@@ -1191,8 +1199,7 @@ function normalizeReviewSuggestions(value) {
     .slice(0, 10);
 }
 
-function parseFieldReviewResult(text) {
-  const data = parseJsonPayload(text);
+function normalizeReviewEntry(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     return {
       status: 'failed',
@@ -1234,7 +1241,102 @@ function parseFieldReviewResult(text) {
   };
 }
 
-function resolveChatTarget(user, mode) {
+function parseFieldReviewBatchResult(text, fields) {
+  const data = parseJsonPayload(text);
+  const list = data && Array.isArray(data.reviews)
+    ? data.reviews
+    : Array.isArray(data)
+      ? data
+      : null;
+
+  const invalid = () => fail(502, 'The reviewer returned incomplete or invalid results. Try again.', 'INVALID_REVIEW_RESPONSE');
+  if (!list || list.length !== fields.length) invalid();
+  const expected = new Set(fields.map((field) => field.id));
+  const byId = new Map();
+  const verdicts = new Set(['pass', 'passed', 'ok', 'approved', 'reviewed', 'fail', 'failed', 'reject', 'rejected', 'revise', 'needs-work', 'needs_work']);
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) invalid();
+    const id = reviewValue(item.id || item.fieldId);
+    if (!expected.has(id) || byId.has(id)) invalid();
+    if (!verdicts.has(reviewValue(item.verdict || item.status || item.result).toLowerCase())
+      && typeof item.passed !== 'boolean') invalid();
+    byId.set(id, normalizeReviewEntry(item));
+  }
+  return fields.map((field) => ({ id: field.id, ...byId.get(field.id) }));
+}
+
+function reviewContextFingerprint(project, story, boxId) {
+  const sceneReview = boxId === 'scene-prompts' || boxId === 'scene-outline';
+  // Hash full relevant sources locally even when the model sees only an excerpt.
+  return crypto.createHash('sha256').update(JSON.stringify({
+    title: project.title, idea: project.idea, description: project.description,
+    referenceMaterial: project.referenceMaterial, brief: reviewRecordText(story.brief),
+    characters: sceneReview ? (story.characters || []).map(reviewRecordText) : [],
+    locations: sceneReview ? (story.locations || []).map(reviewRecordText) : [],
+    styles: sceneReview ? (story.styles || []).map(reviewRecordText) : [],
+    scenes: sceneReview || boxId === 'locations' ? (project.scenes || []).map(reviewRecordText) : [],
+  })).digest('hex');
+}
+
+function reviewFieldContentHash(field, target, context, box, contextFingerprint) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    version: 2, id: field.id, label: field.label, content: field.content,
+    provider: target.provider, endpoint: target.endpoint, model: target.model,
+    instructions: target.configuredContext, system: REVIEW_BATCH_SYSTEM_PROMPT,
+    criteria: box.criteria, context, contextFingerprint,
+  })).digest('hex');
+}
+
+function chunkReviewFields(fields, maxChars) {
+  const chunks = [];
+  let current = [];
+  let size = 0;
+  for (const field of fields) {
+    const content = String(field.content || '').slice(0, REVIEW_FIELD_MAX_CHARS);
+    if (current.length && (size + content.length > maxChars || current.length >= REVIEW_BATCH_MAX_FIELDS)) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push({ ...field, content });
+    size += content.length;
+  }
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
+async function reviewFieldsBatch(target, context, box, fields, telemetry) {
+  const fieldsBlock = fields.map((field) => (
+    `Field id: ${field.id}\nField label: ${field.label}\nField content:\n"""\n${field.content}\n"""`
+  )).join('\n\n---\n\n');
+
+  const userContent = [
+    `Project context:\n${context}`,
+    `Section: ${box.label}`,
+    `Review criteria:\n${box.criteria}`,
+    `Fields to review (${fields.length}):\n\n${fieldsBlock}`,
+    'Return a JSON object with a "reviews" array containing exactly one entry per field id, in the same order.',
+  ].join('\n\n');
+
+  const result = await callChatUpstream({
+    ...target,
+    system: [
+      REVIEW_BATCH_SYSTEM_PROMPT,
+      ...(target.configuredContext ? [target.configuredContext] : []),
+    ].join('\n\n'),
+    messages: [{ role: 'user', content: userContent }],
+    temperature: 0.2,
+    maxTokens: Math.min(8000, 300 + fields.length * 1000),
+    telemetry,
+  });
+
+  return parseFieldReviewBatchResult(result.content, fields).map((review) => ({
+    ...review,
+    model: result.model,
+  }));
+}
+
+function resolveChatTarget(user, mode, requireKey = true) {
   const reviewer = mode === 'reviewer';
   const provider = CHAT_PROVIDERS.has(reviewer ? user.reviewer_provider : user.guide_provider)
     ? (reviewer ? user.reviewer_provider : user.guide_provider)
@@ -1246,29 +1348,29 @@ function resolveChatTarget(user, mode) {
   let endpoint = DEEPSEEK_ENDPOINT;
   let model = configuredModel.trim();
   if (provider === 'anthropic') {
-    if (!user.anthropic_api_key_enc) {
+    if (requireKey && !user.anthropic_api_key_enc) {
       fail(409, 'No Anthropic API key is saved for your account. Add one in Settings.', 'NO_ANTHROPIC_KEY');
     }
-    apiKey = security.decryptApiKey(user.anthropic_api_key_enc);
+    if (requireKey) apiKey = security.decryptApiKey(user.anthropic_api_key_enc);
     endpoint = ANTHROPIC_ENDPOINT;
     if (!model) model = ANTHROPIC_DEFAULT_MODEL;
   } else if (provider === 'openai') {
-    if (!user.openai_api_key_enc) {
+    if (requireKey && !user.openai_api_key_enc) {
       fail(409, 'No OpenAI-compatible API key is saved for your account. Add one in Settings.', 'NO_OPENAI_KEY');
     }
-    apiKey = security.decryptApiKey(user.openai_api_key_enc);
+    if (requireKey) apiKey = security.decryptApiKey(user.openai_api_key_enc);
     const baseUrl = (user.openai_base_url || '').trim() || OPENAI_DEFAULT_BASE_URL;
     endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
     if (!model) model = OPENAI_DEFAULT_MODEL;
   } else {
-    if (!user.api_key_enc) {
+    if (requireKey && !user.api_key_enc) {
       fail(409, 'No DeepSeek API key is saved for your account. Add one in Settings.', 'NO_API_KEY');
     }
-    apiKey = security.decryptApiKey(user.api_key_enc);
+    if (requireKey) apiKey = security.decryptApiKey(user.api_key_enc);
     if (!model) model = DEFAULT_TEXT_MODEL;
   }
 
-  if (!apiKey) {
+  if (requireKey && !apiKey) {
     fail(500, 'Your saved API key could not be read. Please save it again.', 'KEY_UNREADABLE');
   }
   if (model.length > 100) fail(400, 'Model name is too long.');
@@ -1284,6 +1386,12 @@ function handleReviewerFields(req, res, url) {
   const box = REVIEW_BOXES.get(boxId);
   if (!box) fail(400, 'Unknown review section.');
   const fields = reviewerFieldsFor(session.user_id, project, boxId);
+  const user = db.getUserById(session.user_id);
+  const target = resolveChatTarget(user, 'reviewer', false);
+  const story = storyStore.getStory(session.user_id, project.id) || {};
+  const context = buildReviewerContext(project, story, boxId);
+  const contextFingerprint = reviewContextFingerprint(project, story, boxId);
+  const cached = fieldReviewStore.listFor(session.user_id, project.id, boxId);
   return sendJSON(res, 200, {
     project: {
       id: project.id,
@@ -1292,34 +1400,59 @@ function handleReviewerFields(req, res, url) {
       status: project.status,
     },
     box: { id: boxId, label: box.label },
-    fields: fields.map((field) => ({
-      id: field.id,
-      label: field.label,
-      hasContent: Boolean(field.content.trim()),
-    })),
+    fields: fields.map((field) => {
+      const contentHash = reviewFieldContentHash(field, target, context, box, contextFingerprint);
+      return {
+        id: field.id,
+        label: field.label,
+        hasContent: Boolean(field.content.trim()),
+        contentHash,
+        review: cached.get(`${field.id}|${contentHash}`) || null,
+      };
+    }),
   });
 }
 
-async function handleReviewerFieldReview(req, res) {
+async function handleReviewerReview(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
   const projectId = String(body.projectId || '').trim();
   const boxId = String(body.box || '').trim();
-  const fieldId = String(body.fieldId || '').trim().slice(0, 200);
   const project = projectId ? db.getProject(session.user_id, projectId) : null;
   if (!project) fail(404, 'Project not found.');
   const box = REVIEW_BOXES.get(boxId);
   if (!box) fail(400, 'Unknown review section.');
-  if (!fieldId) fail(400, 'Choose a field to review.');
 
   const fields = reviewerFieldsFor(session.user_id, project, boxId);
-  const field = fields.find((item) => item.id === fieldId);
-  if (!field) fail(404, 'Review field not found.');
-  const reviewedAt = new Date().toISOString();
+  const user = db.getUserById(session.user_id);
+  if (!user) fail(401, 'Please sign in.');
+  const target = resolveChatTarget(user, 'reviewer', false);
+  const story = storyStore.getStory(session.user_id, project.id) || {};
+  const context = buildReviewerContext(project, story, boxId);
+  const contextFingerprint = reviewContextFingerprint(project, story, boxId);
+  const snapshot = fields.map((field) => ({ ...field, contentHash: reviewFieldContentHash(field, target, context, box, contextFingerprint) }));
+  const key = JSON.stringify([session.user_id, project.id, boxId, snapshot.map((field) => field.contentHash)]);
+  let pending = reviewsInFlight.get(key);
+  if (!pending) {
+    pending = Promise.resolve().then(() => reviewSnapshot(session, project, boxId, box, snapshot, context, body.force === true, user));
+    reviewsInFlight.set(key, pending);
+  }
+  try {
+    return sendJSON(res, 200, await pending);
+  } finally {
+    if (reviewsInFlight.get(key) === pending) reviewsInFlight.delete(key);
+  }
+}
 
-  if (!field.content.trim()) {
-    return sendJSON(res, 200, {
-      review: {
+async function reviewSnapshot(session, project, boxId, box, fields, context, force, user) {
+  const reviewedAt = new Date().toISOString();
+  const results = new Map();
+  const toReview = [];
+
+  for (const field of fields) {
+    const contentHash = field.contentHash;
+    if (!field.content.trim()) {
+      results.set(field.id, {
         id: field.id,
         label: field.label,
         status: 'failed',
@@ -1328,49 +1461,66 @@ async function handleReviewerFieldReview(req, res) {
         suggestions: ['Fill in this field, then run the review again.'],
         model: null,
         reviewedAt,
-      },
-    });
+      });
+      continue;
+    }
+    if (field.content.length > REVIEW_FIELD_MAX_CHARS) {
+      results.set(field.id, {
+        id: field.id, label: field.label, status: 'failed',
+        summary: `This field exceeds the ${REVIEW_FIELD_MAX_CHARS}-character review limit. Shorten or split it before reviewing.`,
+        findings: [], suggestions: [], model: null, reviewedAt,
+      });
+      continue;
+    }
+    const cached = !force && fieldReviewStore.get(session.user_id, project.id, boxId, field.id, contentHash);
+    if (cached) {
+      results.set(field.id, { id: field.id, label: field.label, ...cached, cached: true });
+      continue;
+    }
+    toReview.push({ ...field, contentHash });
   }
 
-  const user = db.getUserById(session.user_id);
-  if (!user) fail(401, 'Please sign in.');
-  const target = resolveChatTarget(user, 'reviewer');
-  const story = storyStore.getStory(session.user_id, project.id) || {};
-  const context = buildReviewerContext(project, story);
-  const content = field.content.slice(0, REVIEW_FIELD_MAX_CHARS);
-  const userContent = [
-    `Project context:\n${context}`,
-    `Section: ${box.label}`,
-    `Field: ${field.label}`,
-    `Review criteria:\n${box.criteria}`,
-    `Field content:\n"""\n${content}\n"""`,
-    'Return the JSON object only.',
-  ].join('\n\n');
+  if (toReview.length) {
+    const target = resolveChatTarget(user, 'reviewer');
+    for (const chunk of chunkReviewFields(toReview, REVIEW_BATCH_MAX_CHARS)) {
+      const aiResults = await reviewFieldsBatch(target, context, box, chunk, {
+        userId: session.user_id, projectId: project.id, operation: 'field-review',
+      });
+      for (const review of aiResults) {
+        const field = fields.find((item) => item.id === review.id);
+        const stored = fieldReviewStore.save(session.user_id, project.id, boxId, {
+          id: review.id,
+          contentHash: field.contentHash,
+          status: review.status,
+          summary: review.summary,
+          findings: review.findings,
+          suggestions: review.suggestions,
+          model: review.model,
+          reviewedAt,
+        });
+        results.set(review.id, {
+          id: review.id,
+          label: field ? field.label : review.id,
+          ...stored,
+        });
+      }
+    }
+  }
 
-  const result = await callChatUpstream({
-    ...target,
-    system: [
-      REVIEW_FIELD_SYSTEM_PROMPT,
-      ...(target.configuredContext ? [target.configuredContext] : []),
-    ].join('\n\n'),
-    messages: [{ role: 'user', content: userContent }],
-    temperature: 0.2,
-    maxTokens: 1200,
-  });
-  const parsed = parseFieldReviewResult(result.content);
-
-  return sendJSON(res, 200, {
-    review: {
-      id: field.id,
-      label: field.label,
-      status: parsed.status,
-      summary: parsed.summary,
-      findings: parsed.findings,
-      suggestions: parsed.suggestions,
-      model: result.model,
-      reviewedAt,
-    },
-  });
+  return {
+    reviews: fields.map((field) => (
+      results.get(field.id) || {
+        id: field.id,
+        label: field.label,
+        status: 'failed',
+        summary: 'The reviewer returned no result for this field.',
+        findings: [{ severity: 'error', message: 'No result was returned for this field.' }],
+        suggestions: [],
+        model: null,
+        reviewedAt,
+      }
+    )),
+  };
 }
 
 function stripFences(text) {
@@ -1770,7 +1920,26 @@ async function handleGenerate(req, res) {
   return sendJSON(res, 200, { ideas, model, count: ideas.length });
 }
 
-async function callChatUpstream({ provider, endpoint, apiKey, model, system, messages, temperature, maxTokens }) {
+async function callChatUpstream(request) {
+  const started = Date.now();
+  let result;
+  let failure;
+  try {
+    result = await requestChatUpstream(request);
+    return result;
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    apiUsageStore.record({
+      ...request.telemetry, provider: request.provider, model: result?.model || request.model,
+      status: failure ? 'error' : 'success', errorCode: failure?.code || null,
+      durationMs: Date.now() - started, usage: result?.usage || failure?.usage || null,
+    });
+  }
+}
+
+async function requestChatUpstream({ provider, endpoint, apiKey, model, system, messages, temperature, maxTokens }) {
   let upstreamBody;
   let headers;
   if (provider === 'anthropic') {
@@ -1846,10 +2015,11 @@ async function callChatUpstream({ provider, endpoint, apiKey, model, system, mes
     content = normalizeMessageContent(message.content);
   }
 
+  const usage = normalizeUsage(parsed?.usage, provider);
   if (!content || !content.trim()) {
-    fail(502, 'The chat model returned an empty reply. Try again.', 'NO_CHAT_REPLY');
+    throw Object.assign(new HttpError(502, 'The chat model returned an empty reply. Try again.', 'NO_CHAT_REPLY'), { usage });
   }
-  return { content: content.trim(), model: parsed && parsed.model ? parsed.model : model };
+  return { content: content.trim(), model: parsed && parsed.model ? parsed.model : model, usage };
 }
 
 async function handleChat(req, res) {
@@ -1892,9 +2062,10 @@ async function handleChat(req, res) {
     messages: history,
     temperature: 0.7,
     maxTokens: 2000,
+    telemetry: { userId: session.user_id, projectId: projectId || null, operation: `${mode}-chat` },
   });
 
-  return sendJSON(res, 200, { reply: result.content.slice(0, 20000), model: result.model });
+  return sendJSON(res, 200, { reply: result.content.slice(0, 20000), model: result.model, usage: result.usage });
 }
 
 async function handleReference(req, res) {
@@ -2106,6 +2277,27 @@ async function handleReference(req, res) {
   });
 }
 
+function scenePromptResponseData(structured) {
+  if (structured.completion.finishReason === 'length') {
+    fail(502, 'DeepSeek reached the output limit before finishing the scene prompt. Your saved prompts were kept.', 'PROMPT_OUTPUT_LIMIT');
+  }
+  if (!structured.completion.content.trim()) {
+    fail(502, 'DeepSeek returned no final prompt content. Your saved prompts were kept.', 'EMPTY_PROMPT_RESPONSE');
+  }
+  return structured.data;
+}
+
+function singleScenePrompt(data) {
+  let value = data;
+  if (data && Array.isArray(data.prompts)) {
+    value = data.prompts.length === 1 ? data.prompts[0] : null;
+  } else if (Array.isArray(data)) {
+    value = data.length === 1 ? data[0] : null;
+  }
+  return typeof value === 'string' ? value.trim()
+    : value && typeof value.prompt === 'string' ? value.prompt.trim() : '';
+}
+
 async function handleGenerationPrompts(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
@@ -2178,9 +2370,11 @@ async function handleGenerationPrompts(req, res) {
     ],
     temperature: 0.7,
     max_tokens: 8192,
+    thinking: { type: 'disabled' },
+    response_format: { type: 'json_object' },
   });
 
-  const data = structured.data;
+  const data = scenePromptResponseData(structured);
   const promptList = Array.isArray(data)
     ? data
     : data && Array.isArray(data.prompts)
@@ -2278,6 +2472,7 @@ async function handleGenerationPrompt(req, res) {
   if (sceneIndex < 0) fail(404, 'Scene not found.');
 
   const scene = normalizeSceneList([{ ...rawScene, id: sceneId }], 1)[0];
+  scene.order = sceneIndex;
   const scenes = project.scenes.slice();
   scenes[sceneIndex] = scene;
 
@@ -2313,21 +2508,18 @@ async function handleGenerationPrompt(req, res) {
   const structured = await callDeepSeekJson(apiKey, {
     model,
     messages: [
-      { role: 'system', content: GENERATION_SYSTEM_PROMPT },
+      { role: 'system', content: SINGLE_SCENE_GENERATION_SYSTEM_PROMPT },
       { role: 'user', content: userContent },
     ],
     temperature: 0.7,
     max_tokens: 4000,
+    thinking: { type: 'disabled' },
+    response_format: { type: 'json_object' },
   });
 
-  const data = structured.data;
-  const prompt = typeof data === 'string'
-    ? data.trim()
-    : data && typeof data.prompt === 'string'
-      ? data.prompt.trim()
-      : '';
+  const prompt = singleScenePrompt(scenePromptResponseData(structured));
   if (!prompt) {
-    fail(502, 'DeepSeek returned an empty prompt for this scene. Try again.', 'NO_PROMPTS');
+    fail(502, 'DeepSeek returned an invalid scene-prompt format. Expected one nonempty prompt. Your saved prompts were kept.', 'NO_PROMPTS');
   }
 
   const byScene = new Map(
@@ -3698,7 +3890,7 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/reviewer/review') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleReviewerFieldReview(req, res);
+    return handleReviewerReview(req, res);
   }
 
   if (pathname === '/api/reference') {
