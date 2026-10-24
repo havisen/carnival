@@ -15,6 +15,7 @@ const reviewStore = require('./reviews').init(db.db, storyStore, db.DB_PATH);
 const fieldReviewStore = require('./fieldreviews').init(db.db);
 const { init: initApiUsage, normalizeUsage } = require('./apiusage');
 const apiUsageStore = initApiUsage(db.db);
+const requestTracker = require('./track').init(db.db);
 
 security.init(db.DATA_DIR);
 
@@ -150,6 +151,7 @@ function readBody(req) {
     const chunks = [];
     let size = 0;
     req.on('data', (chunk) => {
+      requestTracker.requestChunk(req, chunk);
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
         reject(new HttpError(413, 'Request body too large.'));
@@ -168,6 +170,7 @@ function readBinary(req, maxBytes) {
     const chunks = [];
     let size = 0;
     req.on('data', (chunk) => {
+      requestTracker.requestChunk(req, chunk);
       size += chunk.length;
       if (size > maxBytes) {
         reject(new HttpError(413, 'Image is too large.'));
@@ -176,7 +179,10 @@ function readBinary(req, maxBytes) {
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('end', () => {
+      requestTracker.requestBody('[binary body omitted]', req);
+      resolve(Buffer.concat(chunks));
+    });
     req.on('error', reject);
   });
 }
@@ -200,6 +206,7 @@ function detectImageType(buffer) {
 
 async function readJSON(req) {
   const raw = await readBody(req);
+  requestTracker.requestBody(raw);
   if (!raw) return {};
   let parsed;
   try {
@@ -210,6 +217,7 @@ async function readJSON(req) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     fail(400, 'Invalid JSON body.');
   }
+  requestTracker.requestBody(parsed);
   return parsed;
 }
 
@@ -295,6 +303,7 @@ function requireUser(req) {
 }
 
 function startSession(req, res, userId) {
+  requestTracker.identify(userId);
   db.deleteExpiredSessions();
   const token = security.randomToken();
   db.createSession({
@@ -1788,7 +1797,7 @@ function unpackReferencePayload(value) {
 async function callDeepSeek(apiKey, requestBody) {
   let upstream;
   try {
-    upstream = await fetch(DEEPSEEK_ENDPOINT, {
+    upstream = await requestTracker.fetch(DEEPSEEK_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1796,7 +1805,7 @@ async function callDeepSeek(apiKey, requestBody) {
       },
       body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(120000),
-    });
+    }, { provider: 'deepseek' });
   } catch (err) {
     if (err && err.name === 'TimeoutError') {
       fail(504, 'DeepSeek did not respond in time. Try again.', 'UPSTREAM_TIMEOUT');
@@ -1959,12 +1968,12 @@ async function requestChatUpstream({ provider, endpoint, apiKey, model, system, 
 
   let upstream;
   try {
-    upstream = await fetch(endpoint, {
+    upstream = await requestTracker.fetch(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify(upstreamBody),
       signal: AbortSignal.timeout(120000),
-    });
+    }, { provider });
   } catch (err) {
     if (err && err.name === 'TimeoutError') {
       fail(504, 'The chat model did not respond in time. Try again.', 'UPSTREAM_TIMEOUT');
@@ -2564,7 +2573,7 @@ async function handleGenerationPrompt(req, res) {
 async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceImage = null) {
   let upstream;
   try {
-    upstream = await fetch(BYTEPLUS_IMAGE_ENDPOINT, {
+    upstream = await requestTracker.fetch(BYTEPLUS_IMAGE_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -2580,7 +2589,7 @@ async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceIm
         watermark: false,
       }),
       signal: AbortSignal.timeout(180000),
-    });
+    }, { provider: 'byteplus' });
   } catch (err) {
     if (err && err.name === 'TimeoutError') {
       fail(504, 'BytePlus image generation timed out. Try again.', 'IMAGEGEN_TIMEOUT');
@@ -2637,7 +2646,7 @@ async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceIm
         extension = 'jpg';
       }
     } else if (typeof first.url === 'string' && first.url) {
-      const imageResponse = await fetch(first.url, { signal: AbortSignal.timeout(60000) });
+      const imageResponse = await requestTracker.fetch(first.url, { signal: AbortSignal.timeout(60000) }, { provider: 'image-download' });
       if (!imageResponse.ok) {
         fail(502, `Could not download the generated image (${imageResponse.status}).`, 'IMAGEGEN_DOWNLOAD_FAILED');
       }
@@ -3898,6 +3907,18 @@ async function handleApi(req, res, pathname) {
     fail(403, 'Cross-origin request blocked.');
   }
 
+  if (pathname === '/api/track' || pathname.startsWith('/api/track/')) {
+    const session = requireUser(req);
+    if (method !== 'GET') fail(405, 'Method not allowed.');
+    if (pathname === '/api/track') {
+      const params = new URL(req.url, 'http://localhost').searchParams;
+      return sendJSON(res, 200, requestTracker.list(session.user_id, params));
+    }
+    const entry = requestTracker.get(session.user_id, pathname.slice('/api/track/'.length));
+    if (!entry) fail(404, 'Request not found.');
+    return sendJSON(res, 200, { request: entry });
+  }
+
   if (pathname === '/api/auth/register') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
     return handleRegister(req, res);
@@ -4256,7 +4277,9 @@ function serveStatic(req, res) {
     return sendJSON(res, 400, { error: 'Malformed URL' });
   }
   const versioned = /[?&]v=/.test(req.url || '');
-  const filePath = path.normalize(path.join(PUBLIC_DIR, urlPath === '/' ? 'index.html' : urlPath));
+  const staticPath = urlPath === '/' ? 'index.html'
+    : urlPath === '/track' || urlPath === '/track/' ? 'track/index.html' : urlPath;
+  const filePath = path.normalize(path.join(PUBLIC_DIR, staticPath));
 
   if (filePath !== PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR + path.sep)) {
     return sendJSON(res, 403, { error: 'Forbidden' });
@@ -4310,7 +4333,10 @@ async function dispatch(req, res) {
   }
 
   if (url.pathname.startsWith('/api/')) {
-    return handleApi(req, res, url.pathname);
+    const execute = () => Promise.resolve(handleApi(req, res, url.pathname)).catch((err) => handleError(res, err));
+    // Polling the debugger must not fill its own request history.
+    if (url.pathname === '/api/track' || url.pathname.startsWith('/api/track/')) return execute();
+    return requestTracker.run(req, res, currentSession(req)?.user_id, execute);
   }
   if (req.method === 'GET' || req.method === 'HEAD') {
     return serveStatic(req, res);

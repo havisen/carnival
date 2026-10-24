@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Track · Carnival</title>
+  <link rel="stylesheet" href="/track/styles.css?v=1" />
+  <script src="/track/app.js?v=1" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">◆ <span>Carnival</span></a>
+    <span class="divider">/</span><strong>Track</strong>
+    <a class="back" href="/">Back to app ↗</a>
+  </header>
+  <main>
+    <div class="page-heading">
+      <div><p class="eyebrow">DEBUGGING</p><h1>Request activity</h1>
+        <p class="subtitle">Follow generations from the app to the provider and back.</p></div>
+      <div class="live-controls"><label><input id="live" type="checkbox" checked /> Live updates</label>
+        <button id="refresh" type="button">Refresh</button></div>
+    </div>
+    <p id="message" class="message" role="status" aria-live="polite">Connecting…</p>
+    <div class="stats" aria-label="Request totals">
+      <div><span>Total requests</span><strong id="stat-total">—</strong></div>
+      <div><span>Provider calls</span><strong id="stat-outgoing">—</strong></div>
+      <div><span>In progress</span><strong id="stat-pending">—</strong></div>
+      <div><span>Errors / interrupted</span><strong id="stat-errors">—</strong></div>
+    </div>
+    <form id="filters" class="filters" role="search">
+      <label class="search">Search activity<input id="search" type="search" placeholder="Prompt, model, project ID, endpoint, error…" maxlength="200" /></label>
+      <label>Direction<select id="direction"><option value="">All requests</option value="outgoing">Outgoing · provider</option><option value="incoming">Incoming · app</option></select></label>
+      <label>Status<select id="status"><option value="">Any status</option><option value="pending">In progress</option><option value="error">Error</option><option value="interrupted">Interrupted</option><option value="success">Success</option></select></label>
+      <button id="clear" type="button">Reset filters</button>
+    </form>
+    <div class="workspace">
+      <section class="history" aria-label="Request history">
+        <div class="section-heading"><h2>Requests <span id="count"></span></h2><span id="scope">Newest first</span></div>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Time</th><th>Request / generation</th><th>Status</th><th>Duration</th></tr></thead>
+          <tbody id="requests"></tbody>
+        </table></div>
+        <p id="empty" class="empty" hidden>No requests match these filters.</p>
+        <div class="pagination"><button id="previous" type="button">← Previous</button><span id="page">—</span><button id="next" type="button">Next →</button></div>
+      </section>
+      <aside class="inspector" aria-label="Request details">
+        <div id="detail-empty" class="empty"><span class="inspect-icon">↔</span><h2>Inspect a request</h2><p>Select an entry to see its payload, response, headers, and network information.</p></div>
+        <div id="detail" hidden>
+          <div class="section-heading"><h2>Request details</h2><button id="export" type="button">Export JSON ↓</button></div>
+          <div id="detail-summary"></div>
+          <button id="related" class="related" type="button">Show all calls in this generation</button>
+          <details open><summary>Request payload</summary><pre id="request-body"></pre></details>
+          <details open><summary>Response / generation output</summary><pre id="response-body"></pre></details>
+          <details><summary>Request headers</summary><pre id="request-headers"></pre></details>
+          <details><summary>Response headers</summary><pre id="response-headers"></pre></details>
+          <details open><summary>Network &amp; timing</summary><pre id="network"></pre></details>
+        </div>
+      </aside>
+    </div>
+    <footer>History is saved locally in your app database and belongs to your signed-in account. Recording starts with this update. Credentials and image bytes are omitted; large payloads are marked as truncated. Tracker polling is excluded.</footer>
+  </main>
+</body>
+</html>
