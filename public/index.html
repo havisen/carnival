@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-24.29" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-24.30" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -877,7 +877,7 @@
             <li><strong>Idea Generator</strong> — brainstorm concepts from a context.</li>
             <li><strong>Project Management</strong> — organize ideas into projects and move them through stages.</li>
             <li><strong>Reference Stage</strong> — generate detailed reference material, scene outline, and character references.</li>
-            <li><strong>Story Workspace</strong> — structure the brief, character bibles, locations, style, scenes, and character sheets.</li>
+            <li><strong>Story Workspace</strong> — build character reference sheets, action references, and location references from Reference Stage material.</li>
             <li><strong>Generation Stage</strong> — write image prompts and generate scene images.</li>
             <li><strong>Library</strong> — browse, review, and publish the images you produced.</li>
             <li><strong>Settings</strong> — manage API keys, models, the Guide chat, and the Reviewer bot.</li>
@@ -953,21 +953,13 @@
 
         <div class="card" id="docs-story">
           <h2 class="card-title">Story Workspace</h2>
-          <p>The Story Workspace is the canonical, structured root of the story. It is built from reference generation and fully editable by hand.</p>
-          <h3>Story brief</h3>
-          <p>Title, logline, premise, tone, genre, audience, and setting summary. Edit and <strong>Save brief</strong>.</p>
-          <h3>Character bibles</h3>
-          <p>Each character has name, gender, age, appearance, wardrobe, and continuity notes, plus any legacy reference material. Click <strong>✓ Approve</strong> to mark a character canonical.</p>
-          <h3>Locations</h3>
-          <p>Each location has a description, lighting, and continuity notes. Approve locations the same way.</p>
-          <h3>Style references</h3>
-          <p>A visual style with description, guidance, and negative exclusions. Approve to mark it canonical.</p>
-          <h3>Scene matrix</h3>
-          <p>Each scene has a title, beat, props, action, and links to a location and characters. Only approved locations/characters can be linked for scenes you save manually.</p>
-          <h3>Character sheets</h3>
-          <p>Pick a character and <strong>✨ Generate character sheet</strong> to produce a photorealistic reference <em>image</em> (full-body, canonical wardrobe and appearance) from their bible and style. Each generation creates a new version; promote one to <strong>final</strong>.</p>
-          <h3>Approval</h3>
-          <p>Generated records start <strong>unapproved</strong>. Approve character, location, and style references explicitly. <strong>Check continuity</strong> reports genuine missing information and pending approvals — it never approves anything by itself.</p>
+          <p>Choose a project and click <strong>Generate worksheet</strong> to view its name, idea, characters, setting, Reference Material, and Character References.</p>
+          <h3>Character reference sheets</h3>
+          <p>Generate one selected character sheet or all sheets using only the individual Character Reference and the shared layout template. Preview each version; click <strong>Add this sheet</strong> when satisfied, or generate again. Add a sheet for every character to complete the reference task.</p>
+          <h3>Action references</h3>
+          <p>Choose a picture count, then generate one action for each picture from Reference Material. Each action ends with a location sentence. Review and save or generate again. Saved actions form the scene outline.</p>
+          <h3>Location references</h3>
+          <p>Once actions are saved, generate location descriptions from their ending location sentences and the saved setting. Review and save or generate again.</p>
         </div>
 
         <div class="card" id="docs-generation">
@@ -1271,6 +1263,6 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="app.js?v=2026-10-24.32"></script>
+  <script src="app.js?v=2026-10-24.33"></script>
 </body>
 </html>

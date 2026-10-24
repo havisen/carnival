@@ -829,6 +829,11 @@ body.library-modal-open { overflow: hidden; }
 }
 .story-head-controls { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 .story-head-controls .field { margin: 0; min-width: 220px; }
+#story-source-references { margin: 12px 0 18px; max-height: 320px; overflow-y: auto; }
+#story-source-references p, #worksheet-actions p, #worksheet-locations p { white-space: pre-wrap; overflow-wrap: anywhere; }
+#story-worksheet .results-head { gap: 10px; flex-wrap: wrap; }
+#story-worksheet .story-sheet-version { border-top: 1px solid var(--border); padding-top: 12px; }
+#story-worksheet .story-sheet-version .btn { margin: 5px 6px 5px 0; }
 .story-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

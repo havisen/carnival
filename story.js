@@ -320,6 +320,7 @@ function schema() {
       locations_json TEXT NOT NULL DEFAULT '[]'
     );
 
+
     CREATE TABLE IF NOT EXISTS story_sync (
       project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
       migrated_at TEXT NOT NULL
@@ -406,6 +407,7 @@ function saveWorksheetLocations(userId, projectId, locations) {
     .run(projectId, userId, JSON.stringify(locations));
   return worksheetForUser(userId, projectId);
 }
+
 
 function toCharacter(row) {
   return {
@@ -759,8 +761,18 @@ function updateCharacterSheetStatus(userId, sheetId, status) {
   if (!PROMPT_STATUSES.has(status)) throw Object.assign(new Error('Invalid sheet status.'), { status: 400 });
   const row = rawDb.prepare('SELECT * FROM character_sheets WHERE id = ? AND user_id = ?').get(sheetId, userId);
   if (!row) return null;
-  rawDb.prepare('UPDATE character_sheets SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?')
-    .run(status, now(), sheetId, userId);
+  rawDb.exec('BEGIN');
+  try {
+    if (status === 'final') rawDb.prepare(`UPDATE character_sheets SET status = 'draft', updated_at = ?
+      WHERE project_id = ? AND character_id = ? AND user_id = ? AND id != ? AND status = 'final'`)
+      .run(now(), row.project_id, row.character_id, userId, sheetId);
+    rawDb.prepare('UPDATE character_sheets SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+      .run(status, now(), sheetId, userId);
+    rawDb.exec('COMMIT');
+  } catch (err) {
+    rawDb.exec('ROLLBACK');
+    throw err;
+  }
   return toCharacterSheet(rawDb.prepare('SELECT * FROM character_sheets WHERE id = ?').get(sheetId));
 }
 

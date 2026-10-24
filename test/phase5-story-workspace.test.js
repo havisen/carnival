@@ -286,6 +286,128 @@ test('story workspace import populates structured drafts without approving anyth
   assert.equal(storyStore.workspaceExists(user.id, project.id), true);
 });
 
+test('worksheet saves action outlines and locations separately per user', async (t) => {
+  const { workDir, db, security, story } = freshDb();
+  const store = story.init(db.db, db.DB_PATH);
+  t.after(() => {
+    try { db.db.close(); } catch (_) { /* ignore */ }
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (_) { /* Windows */ }
+  });
+  const user = await makeUser(db, security, 'worksheet-owner');
+  const stranger = await makeUser(db, security, 'worksheet-stranger');
+  const project = db.createProject(user.id, { title: 'Worksheet', stage: 'Reference Stage' });
+  assert.equal(store.setWorksheetSetting(stranger.id, project.id, 'Wrong setting'), null);
+  store.setWorksheetSetting(user.id, project.id, 'Riverside at sunset');
+  const actions = [
+    { action: 'Ava crosses the bridge.', locationSentence: 'The bridge stands above the river.', characters: ['Ava'] },
+    { action: 'Ava waits.', locationSentence: 'The park has a stone fountain.', characters: ['Ava'] },
+  ];
+  assert.equal(store.saveWorksheetActions(stranger.id, project.id, actions), null);
+  store.saveWorksheetActions(user.id, project.id, actions);
+  let loaded = store.getStory(user.id, project.id);
+  assert.equal(loaded.worksheet.setting, 'Riverside at sunset');
+  assert.deepEqual(loaded.worksheet.actions, actions);
+  assert.deepEqual(loaded.worksheet.locations, []);
+  assert.equal(loaded.scenes.length, 2);
+  assert.match(loaded.scenes[0].action, /bridge stands above the river\.$/);
+  const locations = [
+    { name: 'Bridge', description: 'A narrow stone bridge over a broad river.' },
+    { name: 'Park', description: 'A quiet park with a stone fountain.' },
+  ];
+  store.saveWorksheetLocations(user.id, project.id, locations);
+  loaded = store.getStory(user.id, project.id);
+  assert.deepEqual(loaded.worksheet.locations, locations);
+  store.saveWorksheetActions(user.id, project.id, [actions[0]]);
+  assert.deepEqual(store.getStory(user.id, project.id).worksheet.locations, []);
+  assert.equal(store.getStory(stranger.id, project.id), null);
+});
+
+test('worksheet generators preview without saving and use isolated source contexts', async (t) => {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'story-worksheet-http-'));
+  const calls = [];
+  const actions = [
+    { action: 'Ava finds a note.', locationSentence: 'The riverbank is lined with reeds.', characters: ['Ava'] },
+    { action: 'Ava opens the note.', locationSentence: 'The riverside path leads to a pier.', characters: ['Ava'] },
+  ];
+  const locations = [
+    { name: 'Riverbank', description: 'Reeds frame a broad river at dusk.' },
+    { name: 'Pier', description: 'A weathered pier extends from the path.' },
+  ];
+  const mock = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const messages = JSON.parse(body).messages;
+      calls.push(messages);
+      const content = JSON.stringify(messages[0].content.includes('location sentences') ? { locations } : { actions });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }], model: 'deepseek-v4-pro' }));
+    });
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const port = await freePort();
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT, env: { ...process.env, PORT: String(port), DATA_DIR: workDir,
+      APP_SECRET: 'worksheet-test-secret-long-enough-1234', NODE_ENV: 'test',
+      DEEPSEEK_ENDPOINT: `http://127.0.0.1:${mock.address().port}/chat/completions` }, stdio: 'ignore',
+  });
+  t.after(async () => {
+    child.kill();
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 500);
+      child.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+    await new Promise((resolve) => mock.close(resolve));
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (_) { /* Windows */ }
+  });
+  const base = `http://127.0.0.1:${port}`;
+  await waitForHealth(base);
+  async function request(route, method = 'GET', body, cookie = '') {
+    const response = await fetch(base + route, { method,
+      headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(cookie ? { cookie } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: response.status, data: await response.json(), cookie: (response.headers.get('set-cookie') || '').split(';')[0] };
+  }
+  let result = await request('/api/auth/register', 'POST', { username: 'worksheet', password: 'password123' });
+  assert.equal(result.status, 201);
+  const cookie = result.cookie;
+  result = await request('/api/me/api-key', 'PUT', { apiKey: 'test-deepseek-key-1234567890' }, cookie);
+  assert.equal(result.status, 200);
+  result = await request('/api/projects', 'POST', { title: 'Worksheet source', idea: 'SECRET IDEA', stage: 'Reference Stage' }, cookie);
+  assert.equal(result.status, 201);
+  const id = result.data.project.id;
+  result = await request(`/api/projects/${id}`, 'PUT', {
+    referenceMaterial: 'ONLY REFERENCE MATERIAL', characterReferences: [
+      { name: 'Ava', gender: 'Female', referenceMaterial: 'SECRET CHARACTER DESCRIPTION' },
+    ],
+  }, cookie);
+  assert.equal(result.status, 200);
+  result = await request(`/api/story/${id}/worksheet/actions/generate`, 'POST', { count: 2 }, cookie);
+  assert.equal(result.status, 200, result.data.error);
+  assert.deepEqual(result.data.actions, actions);
+  assert.match(calls[0][1].content, /ONLY REFERENCE MATERIAL/);
+  assert.match(calls[0][1].content, /Ava/);
+  assert.doesNotMatch(calls[0][1].content, /SECRET IDEA|SECRET CHARACTER DESCRIPTION/);
+  result = await request(`/api/story/${id}`, 'GET', undefined, cookie);
+  assert.deepEqual(result.data.story.worksheet.actions, []);
+  result = await request(`/api/story/${id}/worksheet/locations/generate`, 'POST', {}, cookie);
+  assert.equal(result.status, 409);
+  result = await request(`/api/story/${id}/worksheet/actions/save`, 'POST', { actions }, cookie);
+  assert.equal(result.status, 200);
+  result = await request(`/api/story/${id}/worksheet/locations/generate`, 'POST', {}, cookie);
+  assert.equal(result.status, 200, result.data.error);
+  assert.deepEqual(result.data.locations, locations);
+  assert.match(calls[1][1].content, /riverbank is lined with reeds/);
+  assert.doesNotMatch(calls[1][1].content, /ONLY REFERENCE MATERIAL|SECRET IDEA|SECRET CHARACTER DESCRIPTION|Ava finds/);
+  result = await request(`/api/story/${id}`, 'GET', undefined, cookie);
+  assert.deepEqual(result.data.story.worksheet.locations, []);
+  result = await request(`/api/story/${id}/worksheet/locations/save`, 'POST', { locations }, cookie);
+  assert.equal(result.status, 200);
+  result = await request(`/api/story/${id}`, 'GET', undefined, cookie);
+  assert.deepEqual(result.data.story.worksheet.locations, locations);
+});
+
 test('workspace import is atomic and does not write on failure', async (t) => {
   const { workDir, db, security, story } = freshDb();
   const storyStore = story.init(db.db, db.DB_PATH);
@@ -610,6 +732,10 @@ test('character sheets are versioned and promotable', async (t) => {
   assert.equal(promoted.status, 'final');
   storyData = storyStore.getStory(user.id, project.id);
   assert.equal(storyData.characterSheets.find((sheet) => sheet.id === second.id).status, 'final');
+  storyStore.updateCharacterSheetStatus(user.id, first.id, 'final');
+  storyData = storyStore.getStory(user.id, project.id);
+  assert.equal(storyData.characterSheets.find((sheet) => sheet.id === first.id).status, 'final');
+  assert.equal(storyData.characterSheets.find((sheet) => sheet.id === second.id).status, 'draft');
 
   // User scoping: another user cannot promote this sheet.
   const other = await makeUser(db, security, 'sheets-other');

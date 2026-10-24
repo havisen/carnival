@@ -1997,13 +1997,13 @@ function renderWorksheet() {
   (source.characterReferences || []).forEach((item) => {
     sourceList.appendChild(worksheetText(`Character Reference: ${item.name}`, item.referenceMaterial));
   });
-  const characters = (source.characterReferences || []).filter((item) => item.name && item.referenceMaterial);
+  const characters = (source.characterReferences || []).filter((item) => item.name);
   const select = $('#worksheet-character');
   const selected = select.value;
   select.replaceChildren();
   characters.forEach((item) => {
     const character = (story.characters || []).find((candidate) => candidate.name === item.name);
-    if (!character) return;
+    if (!character || !item.referenceMaterial) return;
     const option = document.createElement('option');
     option.value = character.id;
     option.textContent = item.name;
@@ -2023,7 +2023,7 @@ function renderWorksheet() {
     const latest = versions[0];
     const card = document.createElement('div');
     card.className = 'story-sheet-version';
-    card.appendChild(worksheetText(item.name, final ? 'Added' : latest ? 'Preview, not added' : 'Sheet needed'));
+    card.appendChild(worksheetText(item.name, !item.referenceMaterial ? 'Character Reference needed' : final ? 'Added' : latest ? 'Preview, not added' : 'Sheet needed'));
     [final, latest && latest.id !== final?.id ? latest : null].filter(Boolean).forEach((sheet) => {
       const img = document.createElement('img');
       img.className = 'story-sheet-image';
@@ -2050,14 +2050,15 @@ function renderWorksheet() {
       again.type = 'button';
       again.className = 'btn btn-secondary btn-sm';
       again.textContent = 'Generate again';
+      again.disabled = !item.referenceMaterial;
       again.addEventListener('click', () => generateWorksheetSheet(character.id, again));
       card.appendChild(again);
     }
     sheets.appendChild(card);
   });
-  $('#story-reference-status').textContent = (source.characterReferences || []).length && characters.length === (source.characterReferences || []).length && characters.every((item) => {
+  $('#story-reference-status').textContent = characters.length && characters.every((item) => {
     const character = (story.characters || []).find((candidate) => candidate.name === item.name);
-    return (story.characterSheets || []).some((sheet) => sheet.characterId === character?.id && sheet.status === 'final');
+    return item.referenceMaterial && (story.characterSheets || []).some((sheet) => sheet.characterId === character?.id && sheet.status === 'final');
   }) ? 'Done' : `${characters.filter((item) => {
     const character = (story.characters || []).find((candidate) => candidate.name === item.name);
     return (story.characterSheets || []).some((sheet) => sheet.characterId === character?.id && sheet.status === 'final');
@@ -2735,6 +2736,9 @@ async function saveWorksheetReferences(type) {
     await api(`/api/story/${encodeURIComponent(projectId)}/worksheet/${type}/save`, { method: 'POST', body: { [type]: items } });
     if (state.story.projectId !== projectId) return;
     await loadStory(projectId);
+    if (type === 'actions') { state.story.locationDraft = null; state.story.actionDraft = null; }
+    else state.story.locationDraft = null;
+    renderWorksheet();
     toast(`${type === 'actions' ? 'Action' : 'Location'} references saved.`, 'success');
   } catch (err) { toast(err.message || 'Could not save references.', 'error'); button.disabled = false; }
 }
@@ -2750,12 +2754,12 @@ $('#worksheet-generate-all').addEventListener('click', async (event) => {
   button.disabled = true;
   const story = state.story.data;
   const characters = (story.referenceSource?.characterReferences || []).map((item) =>
-    story.characters.find((character) => character.name === item.name)).filter(Boolean);
+    story.characters.find((character) => character.name === item.name && item.referenceMaterial)).filter(Boolean);
   for (const character of characters) {
     if (state.story.projectId !== story.projectId) break;
     await generateWorksheetSheet(character.id, button);
   }
-  button.disabled = false;
+  if (state.story.projectId === story.projectId) button.disabled = false;
 });
 ['actions', 'locations'].forEach((type) => {
   $(`#worksheet-generate-${type}`).addEventListener('click', () => generateWorksheetReferences(type));
