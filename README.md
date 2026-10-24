@@ -1,5 +1,15 @@
 # Project Workflow
 
+Development changes are reviewed in GitHub branches and pull requests. See
+[AGENTS.md](AGENTS.md) for the code map and guidance for focused parallel work,
+and [COST_CONTROLS.md](COST_CONTROLS.md) for reviewer caching and usage verification.
+GitHub Actions runs the mock-provider test suite on pull requests and `main`.
+
+The production app runs as a **DirectAdmin Node.js app** with `server.js` as the
+startup file. After deploying changed runtime files, restart that Node.js app
+and refresh the browser. Preserve the production database and encryption secret.
+The source checkout's `npm start` command is for running an app process directly.
+
 A self-contained web app with six tabs:
 
 1. **💡 Idea Generator** — generate ideas with the DeepSeek API.
