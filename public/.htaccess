@@ -1,0 +1,23 @@
+# Cache policy for the static (LiteSpeed / Apache) deployment.
+#
+# The previous deployment let browsers cache an unversioned app.js for a week.
+# After /api/generate was removed from the client, returning visitors kept
+# running the old script and got 404s for that endpoint. HTML must always be
+# revalidated, and JS/CSS get a short lifetime so a forgotten ?v= bump only
+# delays a fix by an hour instead of a week.
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+
+  <FilesMatch "\.(js|css)$">
+    Header set Cache-Control "public, max-age=3600"
+  </FilesMatch>
+
+  # Match the headers the Node server sends when it serves the app itself.
+  Header set X-Content-Type-Options "nosniff"
+  Header set X-Frame-Options "DENY"
+  Header set Referrer-Policy "same-origin"
+  Header set Content-Security-Policy "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+</IfModule>

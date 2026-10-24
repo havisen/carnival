@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project Workflow — Idea Generator &amp; Project Manager</title>
+  <!-- Bump the ?v= value on both assets whenever either file changes. Without
+       it a browser can keep running a stale app.js for days after a deploy and
+       call endpoints that no longer exist. See README. -->
+  <link rel="stylesheet" href="styles.css?v=2026-10-24.28" />
+</head>
+<body>
+  <div class="boot-screen" id="boot-screen">
+    <span class="spinner-ring"></span>
+    <noscript><p class="boot-note">This app requires JavaScript.</p></noscript>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- SIGN IN / REGISTER                                                -->
+  <!-- ================================================================ -->
+  <div class="auth-screen hidden" id="auth-screen">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="brand-mark">◆</span>
+        <div class="brand-text">
+          <h1>Project Workflow</h1>
+          <p>Ideas by DeepSeek · Managed projects in one place</p>
+        </div>
+      </div>
+
+      <div class="auth-tabs" role="tablist">
+        <button class="auth-tab active" id="auth-tab-login" data-auth-tab="login" type="button" role="tab" aria-selected="true">Sign in</button>
+        <button class="auth-tab" id="auth-tab-register" data-auth-tab="register" type="button" role="tab" aria-selected="false">Create account</button>
+      </div>
+
+      <form id="auth-form" novalidate>
+        <label class="field">
+          <span class="field-label">Username</span>
+          <input type="text" id="auth-username" autocomplete="username" spellcheck="false" maxlength="32" placeholder="your-name" required />
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input type="password" id="auth-password" autocomplete="current-password" maxlength="200" placeholder="At least 8 characters" required />
+        </label>
+        <p class="auth-error hidden" id="auth-error"></p>
+        <button class="btn btn-primary btn-large auth-submit" id="auth-submit" type="submit">Sign in</button>
+      </form>
+
+      <p class="auth-note">Your DeepSeek API key is encrypted on the server and used only for your own generations.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- APP                                                               -->
+  <!-- ================================================================ -->
+  <div class="app-shell hidden" id="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <div class="brand-text">
+          <h1>Project Workflow</h1>
+          <p>Ideas by DeepSeek · Managed projects in one place</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <nav class="tabs" role="tablist">
+          <button class="tab active" id="tab-ideas" role="tab" aria-selected="true" data-tab="ideas">
+            <span class="tab-icon">💡</span> Idea Generator
+          </button>
+          <button class="tab" id="tab-projects" role="tab" aria-selected="false" data-tab="projects">
+            <span class="tab-icon">🗂️</span> Project Management
+            <span class="badge" id="project-count-badge">0</span>
+          </button>
+          <button class="tab" id="tab-reference" role="tab" aria-selected="false" data-tab="reference">
+            <span class="tab-icon">📚</span> Reference Stage
+          </button>
+          <button class="tab" id="tab-story" role="tab" aria-selected="false" data-tab="story">
+            <span class="tab-icon">📖</span> Story Workspace
+          </button>
+          <button class="tab" id="tab-generation" role="tab" aria-selected="false" data-tab="generation">
+            <span class="tab-icon">🎬</span> Generation Stage
+          </button>
+          <button class="tab" id="tab-library" role="tab" aria-selected="false" data-tab="library">
+            <span class="tab-icon">🖼️</span> Library
+          </button>
+          <button class="tab" id="tab-apis" role="tab" aria-selected="false" data-tab="apis">
+            <span class="tab-icon">🔑</span> Settings
+          </button>
+          <button class="tab" id="tab-docs" role="tab" aria-selected="false" data-tab="docs">
+            <span class="tab-icon">📖</span> Docs
+          </button>
+        </nav>
+        <div class="user-box">
+          <span class="user-name" id="user-name">@user</span>
+          <button class="btn btn-ghost btn-sm" id="logout-btn" type="button">Sign out</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <!-- Sidebar: workflow checklist (top) + DeepSeek chat (bottom) -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-section sidebar-checklist">
+          <div class="sidebar-head">
+            <h2 class="sidebar-title">Workflow</h2>
+          </div>
+          <label class="field">
+            <span class="field-label">Project</span>
+            <select id="sidebar-project"></select>
+          </label>
+          <button class="btn btn-primary btn-sm sidebar-next-step" id="sidebar-next-step" type="button">→ Next step</button>
+          <ul class="checklist" id="workflow-checklist"></ul>
+        </div>
+
+        <div class="sidebar-section sidebar-chat">
+          <div class="sidebar-head">
+            <h2 class="sidebar-title">DeepSeek Chat</h2>
+            <div class="chat-mode-toggle" role="tablist">
+              <button class="chat-mode active" data-chat-mode="guide" type="button" role="tab" aria-selected="true">Guide</button>
+              <button class="chat-mode" data-chat-mode="reviewer" type="button" role="tab" aria-selected="false">Reviewer</button>
+            </div>
+          </div>
+          <div class="chat-pane" id="guide-chat-pane">
+            <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+            <div class="chat-typing hidden" id="chat-typing">DeepSeek is typing…</div>
+            <form class="chat-input-row" id="chat-form" autocomplete="off">
+              <input type="text" id="chat-input" maxlength="4000" placeholder="Ask DeepSeek…" aria-label="Chat message" />
+              <button class="btn btn-primary btn-sm" id="chat-send" type="submit">Send</button>
+            </form>
+            <p class="hint chat-hint" id="chat-hint">Chat persists while this page stays open.</p>
+          </div>
+
+          <div class="reviewer-pane hidden" id="reviewer-pane">
+            <div class="reviewer-project-card">
+              <div class="reviewer-stage-line">
+                <span class="reviewer-stage-icon" aria-hidden="true">🎞️</span>
+                <span id="reviewer-stage-label">Generation Stage</span>
+              </div>
+              <label class="field reviewer-project-field">
+                <span class="field-label">Project</span>
+                <select id="reviewer-project" aria-label="Project to review"></select>
+              </label>
+            </div>
+
+            <div class="reviewer-results-card">
+              <div class="reviewer-results-title">
+                <span>Reviewing</span>
+                <strong id="reviewer-box-label">Scene Prompts</strong>
+              </div>
+              <ul class="reviewer-field-list" id="reviewer-fields" aria-live="polite"></ul>
+              <p class="reviewer-empty hidden" id="reviewer-empty">No fields in this section yet.</p>
+              <button class="reviewer-details-btn" id="reviewer-details-btn" type="button">Details</button>
+            </div>
+
+            <div class="reviewer-legend" aria-label="Review status legend">
+              <span><span class="reviewer-status-icon reviewed" aria-hidden="true">✓</span> Reviewed</span>
+              <span><span class="reviewer-status-icon failed" aria-hidden="true">✕</span> Failed</span>
+              <span><span class="reviewer-status-icon processing" aria-hidden="true"><span class="reviewer-spinner"></span></span> Processing</span>
+            </div>
+
+            <div class="reviewer-controls">
+              <select id="reviewer-box" aria-label="Section to review"></select>
+              <button class="reviewer-run-btn" id="reviewer-run" type="button">Review</button>
+            </div>
+            <button class="reviewer-details-btn" id="reviewer-rerun" type="button">Review again</button>
+            <p class="reviewer-hint" id="reviewer-hint">Choose a project and a section, then review every field.</p>
+          </div>
+        </div>
+      </aside>
+
+    <main>
+      <!-- ============================================================ -->
+      <!-- IDEA GENERATOR TAB                                            -->
+      <!-- ============================================================ -->
+      <section class="panel active" id="panel-ideas" role="tabpanel">
+        <div class="grid-two">
+          <!-- Left column: settings + context -->
+          <div class="col">
+            <div class="card">
+              <h2 class="card-title">Model</h2>
+              <label class="field">
+                <span class="field-label">DeepSeek model</span>
+                <input type="text" id="model" list="model-list" value="deepseek-v4-pro" spellcheck="false" />
+                <datalist id="model-list">
+                  <option value="deepseek-v4-pro">DeepSeek 4 Pro</option>
+                </datalist>
+              </label>
+              <button class="btn btn-ghost btn-sm open-apis" type="button">Manage keys &amp; models in Settings</button>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">Context</h2>
+              <div class="drop-zone" id="drop-zone">
+                <input type="file" id="context-file" accept=".txt,text/plain" hidden />
+                <div class="drop-inner">
+                  <span class="drop-icon">📄</span>
+                  <p>Drop a <code>.txt</code> file here, or</p>
+                  <button class="btn btn-secondary" id="pick-file" type="button">Browse file</button>
+                </div>
+                <div class="file-chip hidden" id="file-chip">
+                  <span id="file-name"></span>
+                  <button class="chip-remove" id="clear-file" type="button" title="Remove file">✕</button>
+                </div>
+              </div>
+              <label class="field">
+                <span class="field-label">…or paste context directly</span>
+                <textarea id="context-text" rows="9" placeholder="Paste background text, topic, constraints, or notes here…"></textarea>
+              </label>
+              <div class="context-actions">
+                <button class="btn btn-ghost btn-sm" id="clear-context" type="button">✕ Clear context</button>
+                <span class="hint" id="context-hint">Context is saved on this device and stays until you clear it.</span>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">Generate</h2>
+              <div class="gen-row">
+                <label class="field inline">
+                  <span class="field-label">Number of ideas</span>
+                  <input type="number" id="num-ideas" min="1" max="50" value="5" />
+                </label>
+                <button class="btn btn-primary btn-large" id="generate-btn" type="button">
+                  <span id="generate-label">✨ Generate ideas</span>
+                </button>
+              </div>
+              <p class="hint" id="gen-hint">Add context, then generate with your saved key.</p>
+              <div class="spinner hidden" id="generating">
+                <span class="spinner-ring"></span>
+                <span id="generating-text">Generating ideas…</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right column: results -->
+          <div class="col">
+            <div class="card results-card">
+              <div class="results-head">
+                <h2 class="card-title">Ideas <span class="count" id="idea-count">0</span></h2>
+                <div class="results-actions">
+                  <button class="btn btn-ghost btn-sm" id="select-all" type="button">Select all</button>
+                  <button class="btn btn-ghost btn-sm" id="select-none" type="button">Clear</button>
+                </div>
+              </div>
+              <div class="empty-state" id="ideas-empty">
+                <span class="empty-icon">✨</span>
+                <p>Generated ideas will appear here.<br />Tick the ones you want, then export or send them to Project Management.</p>
+              </div>
+              <ul class="idea-list hidden" id="idea-list"></ul>
+            </div>
+
+            <div class="bulk-bar hidden" id="bulk-bar">
+              <span><strong id="selected-count">0</strong> selected</span>
+              <div class="bulk-actions">
+                <button class="btn btn-secondary" id="export-btn" type="button">⬇ Export as .txt</button>
+                <button class="btn btn-primary" id="import-btn" type="button">➜ Send to Project Management</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- PROJECT MANAGEMENT TAB                                        -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-projects" role="tabpanel">
+        <div class="pm-toolbar card">
+          <div class="pm-stage-tabs" id="pm-stage-tabs" role="tablist">
+            <button class="pm-stage-tab active" data-stage="Idea Stage" role="tab" aria-selected="true" type="button">Idea Stage</button>
+            <button class="pm-stage-tab" data-stage="Reference Stage" role="tab" aria-selected="false" type="button">Reference Stage</button>
+            <button class="pm-stage-tab" data-stage="Generation Stage" role="tab" aria-selected="false" type="button">Generation Stage</button>
+            <button class="pm-stage-tab" data-stage="Completed" role="tab" aria-selected="false" type="button">✅ Completed</button>
+          </div>
+          <div class="pm-controls">
+            <input type="search" id="pm-search" placeholder="Search projects…" />
+            <select id="pm-filter">
+              <option value="all">All statuses</option>
+              <option value="Not Started">Not Started</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Done">Done</option>
+            </select>
+            <button class="btn btn-primary" id="new-project-btn" type="button">＋ New project</button>
+            <button class="btn btn-secondary" id="pm-export-btn" type="button">⬇ Export</button>
+          </div>
+        </div>
+
+        <div class="empty-state" id="pm-empty">
+          <span class="empty-icon">🗂️</span>
+          <p id="pm-empty-text">No projects in Idea Stage yet.<br />Generate ideas and send them here, or create a project manually.</p>
+        </div>
+
+        <div class="pm-list" id="pm-list"></div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- REFERENCE STAGE TAB                                           -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-reference" role="tabpanel">
+        <div class="grid-two">
+          <div class="col">
+            <div class="card">
+              <h2 class="card-title">Reference project</h2>
+              <label class="field">
+                <span class="field-label">Project in Reference Stage</span>
+                <select id="ref-project"></select>
+              </label>
+              <p class="hint" id="ref-project-hint">Choose a project to load its idea as context.</p>
+              <button class="btn btn-ghost btn-sm" id="ref-open-story" type="button">📖 Open Story workspace</button>
+              <label class="field">
+                <span class="field-label">Context (from the project idea)</span>
+                <textarea id="ref-context" rows="7" maxlength="20000" placeholder="The selected project's idea appears here. You can refine it before generating."></textarea>
+              </label>
+              <button class="btn btn-secondary btn-sm hidden" id="ref-open-projects" type="button">Open Project Management</button>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">Characters &amp; setting</h2>
+              <div class="ref-inline-fields">
+                <label class="field">
+                  <span class="field-label">Characters</span>
+                  <select id="ref-character-count">
+                    <option value="1">1 character</option>
+                    <option value="2">2 characters</option>
+                    <option value="3">3 characters</option>
+                    <option value="4">4 characters</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">DeepSeek model</span>
+                  <input type="text" id="ref-model" list="model-list" value="deepseek-v4-pro" maxlength="100" spellcheck="false" />
+                </label>
+              </div>
+              <div id="ref-characters"></div>
+              <label class="field">
+                <span class="field-label">Setting</span>
+                <input type="text" id="ref-setting" placeholder="Where and when does this take place?" maxlength="2000" />
+              </label>
+              <button class="btn btn-secondary btn-sm ref-use-guide" id="ref-use-guide" type="button">Use guide</button>
+              <p class="hint ref-use-guide-hint">Ask the Guide to suggest a setting for the current reference project.</p>
+            </div>
+
+            <div class="card">
+              <button class="btn btn-primary btn-large" id="ref-generate" type="button">
+                <span id="ref-generate-label">✨ Generate reference material</span>
+              </button>
+              <p class="hint" id="ref-hint">Select a Reference Stage project, add characters and a setting, then generate.</p>
+              <div class="spinner hidden" id="ref-generating">
+                <span class="spinner-ring"></span>
+                <span>Generating reference material…</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="card results-card">
+              <h2 class="card-title">Reference Material</h2>
+              <div class="empty-state" id="ref-empty">
+                <span class="empty-icon">📚</span>
+                <p>Generated reference material will appear here and is saved to the selected project.</p>
+              </div>
+              <textarea class="ref-output hidden" id="ref-output" rows="16" maxlength="200000" placeholder="Generated reference material. You can edit it here and click Save."></textarea>
+              <div class="ref-output-actions">
+                <button class="btn btn-secondary" id="ref-save" type="button">💾 Save reference</button>
+                <button class="btn btn-primary" id="ref-regenerate" type="button">↻ Regenerate</button>
+              </div>
+              <div class="character-refs hidden" id="ref-character-refs">
+                <h3 class="character-refs-title">Character Reference Material</h3>
+                <div id="ref-character-ref-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- STORY WORKSPACE TAB                                           -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-story" role="tabpanel">
+        <div class="card story-head">
+          <div>
+            <h2 class="card-title">Story Workspace</h2>
+            <p class="hint">Structure the brief, approved references, scene matrix, and versioned prompts. Nothing is generated or approved automatically.</p>
+          </div>
+          <div class="story-head-controls">
+            <label class="field inline">
+              <span class="field-label">Project</span>
+              <select id="story-project"></select>
+            </label>
+            <button class="btn btn-secondary btn-sm" id="story-refresh" type="button">↻ Refresh</button>
+            <button class="btn btn-primary btn-sm" id="story-validate" type="button">Check continuity</button>
+            <button class="btn btn-secondary btn-sm hidden" id="story-generate-workspace" type="button">✨ Generate workspace from reference</button>
+          </div>
+        </div>
+
+        <div class="library-state" id="story-loading" role="status" aria-live="polite">
+          <span class="spinner-ring"></span>
+          <p>Loading story workspace…</p>
+        </div>
+        <div class="empty-state hidden" id="story-empty">
+          <span class="empty-icon">📖</span>
+          <p>Choose a project to build its story brief, references, scenes, and prompt drafts.</p>
+        </div>
+        <div class="error-state hidden" id="story-error">
+          <p id="story-error-text">Could not load the story workspace.</p>
+          <button class="btn btn-secondary btn-sm" id="story-retry" type="button">Retry</button>
+        </div>
+
+        <div class="hidden" id="story-content">
+          <div class="card story-brief-card">
+            <div class="results-head">
+              <h2 class="card-title">Story brief</h2>
+              <button class="btn btn-primary btn-sm" id="story-save-brief" type="button">Save brief</button>
+            </div>
+            <div class="story-form-grid">
+              <label class="field"><span class="field-label">Story title</span><input id="story-brief-title" maxlength="200" /></label>
+              <label class="field"><span class="field-label">Logline</span><input id="story-brief-logline" maxlength="500" /></label>
+              <label class="field story-span"><span class="field-label">Premise</span><textarea id="story-brief-premise" rows="3" maxlength="5000"></textarea></label>
+              <label class="field"><span class="field-label">Tone</span><input id="story-brief-tone" maxlength="200" /></label>
+              <label class="field"><span class="field-label">Genre</span><input id="story-brief-genre" maxlength="200" /></label>
+              <label class="field"><span class="field-label">Audience</span><input id="story-brief-audience" maxlength="200" /></label>
+              <label class="field"><span class="field-label">Setting summary</span><input id="story-brief-setting" maxlength="3000" /></label>
+            </div>
+            <p class="hint" id="story-brief-hint">The brief is the canonical root of the story.</p>
+          </div>
+
+          <div class="grid-two story-references">
+            <div class="col">
+              <div class="card">
+                <div class="results-head">
+                  <h2 class="card-title">Character bibles</h2>
+                  <button class="btn btn-secondary btn-sm" id="story-add-character" type="button">＋ Character</button>
+                </div>
+                <div id="story-characters"></div>
+              </div>
+              <div class="card">
+                <div class="results-head">
+                  <h2 class="card-title">Locations</h2>
+                  <button class="btn btn-secondary btn-sm" id="story-add-location" type="button">＋ Location</button>
+                </div>
+                <div id="story-locations"></div>
+              </div>
+            </div>
+            <div class="col">
+              <div class="card">
+                <div class="results-head">
+                  <h2 class="card-title">Style references</h2>
+                  <button class="btn btn-secondary btn-sm" id="story-add-style" type="button">＋ Style</button>
+                </div>
+                <div id="story-styles"></div>
+              </div>
+              <div class="card">
+                <div class="results-head">
+                  <h2 class="card-title">Scene matrix</h2>
+                  <div class="results-actions">
+                    <button class="btn btn-secondary btn-sm" id="story-add-scene" type="button">＋ Scene</button>
+                    <button class="btn btn-primary btn-sm" id="story-save-scenes" type="button">Save scenes</button>
+                  </div>
+                </div>
+                <div id="story-scenes"></div>
+                <p class="hint" id="story-scene-hint">Only approved locations and characters can be linked. The server rejects unapproved links.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="card story-prompts-card">
+            <div class="results-head">
+              <h2 class="card-title">Character sheets</h2>
+              <label class="field inline">
+                <span class="field-label">Character</span>
+                <select id="story-sheet-character"></select>
+              </label>
+              <button class="btn btn-primary btn-sm" id="story-generate-sheet" type="button">✨ Generate character sheet</button>
+            </div>
+            <div id="story-sheets"></div>
+            <p class="hint" id="story-sheet-hint">Generate a photorealistic character reference image. Each generation creates a new version; promote one to final.</p>
+          </div>
+
+          <div class="card story-warnings-card">
+            <div class="results-head">
+              <h2 class="card-title">Continuity warnings</h2>
+              <span class="hint" id="story-warning-count">Not checked</span>
+            </div>
+            <div id="story-warnings"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- GENERATION STAGE TAB                                          -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-generation" role="tabpanel">
+        <div class="grid-two">
+          <div class="col">
+            <div class="card">
+              <h2 class="card-title">Generation project</h2>
+              <label class="field">
+                <span class="field-label">Project in Generation Stage</span>
+                <select id="gen-project"></select>
+              </label>
+              <p class="hint" id="gen-project-hint">Choose a project to load its idea, reference material, and scene outline.</p>
+              <button class="btn btn-ghost btn-sm" id="gen-open-story" type="button">📖 Open Story workspace</button>
+              <button class="btn btn-secondary btn-sm hidden" id="gen-open-projects" type="button">Open Project Management</button>
+              <label class="field">
+                <span class="field-label">Idea</span>
+                <textarea id="gen-idea" rows="3" readonly></textarea>
+              </label>
+              <label class="field">
+                <span class="field-label">Reference Material</span>
+                <textarea id="gen-reference" rows="7" readonly></textarea>
+              </label>
+            </div>
+
+            <div class="card">
+              <div class="results-head">
+                <h2 class="card-title">Scene Outline</h2>
+                <div class="results-actions">
+                  <button class="btn btn-secondary btn-sm" id="gen-add-scene" type="button">＋ Add scene</button>
+                  <button class="btn btn-secondary btn-sm" id="gen-save-scenes" type="button">💾 Save outline</button>
+                </div>
+              </div>
+              <div id="gen-scenes"></div>
+              <p class="hint" id="gen-scene-hint">Scenes are editable. Save the outline before leaving the page.</p>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="card results-card">
+              <div class="results-head">
+                <h2 class="card-title">Scene Prompts</h2>
+              </div>
+              <div class="gen-prompt-controls">
+                <label class="field inline">
+                  <span class="field-label">DeepSeek model</span>
+                  <input type="text" id="gen-model" list="model-list" value="deepseek-v4-pro" maxlength="100" spellcheck="false" />
+                </label>
+                <label class="field inline">
+                  <span class="field-label">Image size · <span id="gen-image-model-label">Seedream 5.0 Pro</span></span>
+                  <select id="gen-image-size">
+                    <option value="1K">1K</option>
+                    <option value="1.5K">1.5K</option>
+                    <option value="2K" selected>2K</option>
+                  </select>
+                </label>
+                <button class="btn btn-primary" id="gen-generate-prompts" type="button">✨ Generate Scene Prompts</button>
+                <button class="btn btn-secondary" id="gen-generate-next-image" type="button">🖼 Generate next image</button>
+              </div>
+              <p class="hint" id="gen-prompt-hint">Generate one photorealistic prompt per scene.</p>
+              <div id="gen-prompts"></div>
+            </div>
+
+            <div class="card">
+              <div class="results-head">
+                <h2 class="card-title">Character sheets</h2>
+              </div>
+              <div id="gen-character-sheets"></div>
+              <p class="hint">Character sheets from Story Workspace appear here automatically.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- LIBRARY TAB                                                   -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-library" role="tabpanel">
+        <div class="card library-head">
+          <div class="library-head-copy">
+            <h2 class="card-title">Library</h2>
+            <p class="hint">Visual index of images stored under <code>data/images</code>. Presence here does not mean an image is approved or cleared for publication.</p>
+          </div>
+          <div class="library-controls">
+            <input type="search" id="library-search" placeholder="Search filename or path…" aria-label="Search library images" autocomplete="off" />
+            <button class="btn btn-secondary" id="library-refresh" type="button">↻ Refresh</button>
+          </div>
+        </div>
+
+        <div class="library-state" id="library-loading" role="status" aria-live="polite">
+          <span class="spinner-ring"></span>
+          <p>Loading library images…</p>
+        </div>
+
+        <div class="library-state hidden" id="library-empty">
+          <span class="empty-icon">🖼️</span>
+          <p>No images found. Images placed in <code>data/images</code> will appear here.</p>
+        </div>
+
+        <div class="library-state error hidden" id="library-error" role="alert">
+          <p id="library-error-text">Could not load the library.</p>
+          <button class="btn btn-secondary" id="library-retry" type="button">Try again</button>
+        </div>
+
+        <div class="library-summary hidden" id="library-summary">
+          <span id="library-count">0 images</span>
+          <span class="hint">Assets only — approvals and review outcomes appear only when recorded.</span>
+        </div>
+
+        <div class="library-filterbar card">
+          <select id="library-project-filter" aria-label="Filter by project"><option value="">All projects</option></select>
+          <select id="library-episode-filter" aria-label="Filter by episode"><option value="">All episodes</option></select>
+          <select id="library-collection-filter" aria-label="Filter by collection"><option value="">All collections</option></select>
+          <select id="library-tag-filter" aria-label="Filter by tag"><option value="">All tags</option></select>
+          <select id="library-type-filter" aria-label="Filter by file type"><option value="">All types</option></select>
+          <select id="library-status-filter" aria-label="Filter by lifecycle status"><option value="">All statuses</option></select>
+          <label class="library-check"><input type="checkbox" id="library-duplicate-filter" /> Duplicates</label>
+          <label class="library-check"><input type="checkbox" id="library-missing-filter" /> Missing</label>
+          <label class="library-check"><input type="checkbox" id="library-unassigned-filter" /> Unassigned</label>
+          <button class="btn btn-ghost btn-sm" id="library-clear-filters" type="button">Clear filters</button>
+        </div>
+
+        <div class="library-grid" id="library-grid"></div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- AI API MANAGER TAB                                           -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-apis" role="tabpanel">
+        <div class="card api-manager-hero">
+          <div class="results-head">
+            <div>
+              <h2 class="card-title">Settings</h2>
+              <p class="hint">Add your provider keys, choose default models, and configure the Guide chat and Reviewer bot. Keys are encrypted at rest and never returned to the browser.</p>
+            </div>
+            <div class="api-status-row">
+              <span class="api-pill" id="apis-deepseek-status">DeepSeek: no key</span>
+              <span class="api-pill" id="apis-byteplus-status">BytePlus: no key</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-two">
+          <div class="col">
+            <div class="card">
+              <h2 class="card-title">DeepSeek API</h2>
+              <div class="key-state" id="key-empty">
+                <span class="key-dot key-dot-missing"></span>
+                <p>No DeepSeek key saved yet. Add one for ideas, references, and scene prompts.</p>
+              </div>
+              <div class="key-state hidden" id="key-saved">
+                <span class="key-dot"></span>
+                <p>Using your saved DeepSeek key <code id="key-hint">—</code>.</p>
+              </div>
+
+              <label class="field">
+                <span class="field-label" id="key-label">Add DeepSeek API key</span>
+                <div class="input-with-action">
+                  <input type="password" id="api-key" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+                  <button class="btn btn-ghost" id="toggle-key" type="button" title="Show / hide key">👁</button>
+                </div>
+              </label>
+              <div class="key-actions">
+                <button class="btn btn-secondary" id="save-key" type="button">Save key</button>
+                <button class="btn btn-ghost btn-sm hidden" id="remove-key" type="button">Remove saved key</button>
+              </div>
+              <p class="hint">Used server-side only. The saved key is never sent back to the browser.</p>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">BytePlus image API</h2>
+              <p class="hint">ModelArk API key for Seedream image generation.</p>
+              <div class="key-state" id="bp-key-empty">
+                <span class="key-dot key-dot-missing"></span>
+                <p>No BytePlus API key saved yet. Add one to generate scene images.</p>
+              </div>
+              <div class="key-state hidden" id="bp-key-saved">
+                <span class="key-dot"></span>
+                <p>Using your saved BytePlus key <code id="bp-key-hint">—</code>.</p>
+              </div>
+
+              <label class="field">
+                <span class="field-label" id="bp-key-label">Add BytePlus API key</span>
+                <div class="input-with-action">
+                  <input type="password" id="bp-api-key" placeholder="BytePlus ModelArk API key" autocomplete="off" spellcheck="false" />
+                  <button class="btn btn-ghost" id="bp-toggle-key" type="button" title="Show / hide key">👁</button>
+                </div>
+              </label>
+              <div class="key-actions">
+                <button class="btn btn-secondary" id="bp-save-key" type="button">Save key</button>
+                <button class="btn btn-ghost btn-sm hidden" id="bp-remove-key" type="button">Remove saved key</button>
+              </div>
+              <p class="hint">Encrypted at rest and used only for your image generations.</p>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">Anthropic API</h2>
+              <p class="hint">API key for Claude models used by the Guide or Reviewer chat.</p>
+              <div class="key-state" id="anthropic-key-empty">
+                <span class="key-dot key-dot-missing"></span>
+                <p>No Anthropic key saved yet. Add one to use Claude models in the chat.</p>
+              </div>
+              <div class="key-state hidden" id="anthropic-key-saved">
+                <span class="key-dot"></span>
+                <p>Using your saved Anthropic key <code id="anthropic-key-hint">—</code>.</p>
+              </div>
+              <label class="field">
+                <span class="field-label" id="anthropic-key-label">Add Anthropic API key</span>
+                <div class="input-with-action">
+                  <input type="password" id="anthropic-api-key" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+                  <button class="btn btn-ghost" id="anthropic-toggle-key" type="button" title="Show / hide key">👁</button>
+                </div>
+              </label>
+              <div class="key-actions">
+                <button class="btn btn-secondary" id="anthropic-save-key" type="button">Save key</button>
+                <button class="btn btn-ghost btn-sm hidden" id="anthropic-remove-key" type="button">Remove saved key</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">OpenAI-compatible API</h2>
+              <p class="hint">API key and base URL for any OpenAI-compatible provider (OpenAI, Together, Groq, local, etc.).</p>
+              <div class="key-state" id="openai-key-empty">
+                <span class="key-dot key-dot-missing"></span>
+                <p>No OpenAI-compatible key saved yet.</p>
+              </div>
+              <div class="key-state hidden" id="openai-key-saved">
+                <span class="key-dot"></span>
+                <p>Using your saved key <code id="openai-key-hint">—</code>.</p>
+              </div>
+              <label class="field">
+                <span class="field-label" id="openai-key-label">Add OpenAI-compatible API key</span>
+                <div class="input-with-action">
+                  <input type="password" id="openai-api-key" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+                  <button class="btn btn-ghost" id="openai-toggle-key" type="button" title="Show / hide key">👁</button>
+                </div>
+              </label>
+              <label class="field">
+                <span class="field-label">Base URL</span>
+                <input type="text" id="openai-base-url" placeholder="https://api.openai.com/v1" spellcheck="false" />
+              </label>
+              <div class="key-actions">
+                <button class="btn btn-secondary" id="openai-save-key" type="button">Save key</button>
+                <button class="btn btn-ghost btn-sm hidden" id="openai-remove-key" type="button">Remove saved key</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="card">
+              <h2 class="card-title">Default models</h2>
+              <label class="field">
+                <span class="field-label">Text generation</span>
+                <select id="text-model-pref">
+                  <option value="deepseek-v4-pro">DeepSeek 4 Pro — deepseek-v4-pro</option>
+                </select>
+              </label>
+              <p class="hint">Used for ideas, reference material, and scene prompts. DeepSeek 4 Pro is the only configured text model.</p>
+
+              <label class="field">
+                <span class="field-label">Image generation</span>
+                <select id="image-model-pref">
+                  <option value="dola-seedream-5-0-pro-260628">Seedream 5.0 Pro — 1K / 1.5K / 2K</option>
+                </select>
+              </label>
+              <p class="hint">Used for all new scene images. Seedream 5.0 Pro supports 1K, 1.5K, and 2K.</p>
+
+              <button class="btn btn-primary" id="save-ai-settings" type="button">Save model preferences</button>
+              <p class="hint" id="ai-settings-hint">Choose a text and image model, then save.</p>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">Chat assistants</h2>
+              <p class="hint">Pick a provider, model, and extra instructions for the Guide chat and Reviewer bot.</p>
+
+              <h3 class="settings-subtitle">Guide</h3>
+              <div class="story-form-grid">
+                <label class="field">
+                  <span class="field-label">Provider</span>
+                  <select id="guide-provider">
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="openai">OpenAI-compatible</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Model</span>
+                  <input type="text" id="guide-model" maxlength="100" placeholder="deepseek-v4-pro" spellcheck="false" />
+                </label>
+              </div>
+              <label class="field">
+                <span class="field-label">Context / instructions</span>
+                <textarea id="guide-context" rows="4" maxlength="20000" placeholder="Extra instructions for the Guide (optional)…"></textarea>
+              </label>
+
+              <h3 class="settings-subtitle">Reviewer</h3>
+              <div class="story-form-grid">
+                <label class="field">
+                  <span class="field-label">Provider</span>
+                  <select id="reviewer-provider">
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="openai">OpenAI-compatible</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Model</span>
+                  <input type="text" id="reviewer-model" maxlength="100" placeholder="deepseek-v4-pro" spellcheck="false" />
+                </label>
+              </div>
+              <label class="field">
+                <span class="field-label">Context / instructions</span>
+                <textarea id="reviewer-context" rows="4" maxlength="20000" placeholder="Paste context or review instructions for the Reviewer (optional)…"></textarea>
+              </label>
+
+              <button class="btn btn-primary" id="save-chat-settings" type="button">Save chat settings</button>
+              <p class="hint" id="chat-settings-hint">These configure the Guide chat and Reviewer bot.</p>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">Current routing</h2>
+              <dl class="api-routing">
+                <dt>Ideas, references, prompts</dt>
+                <dd id="route-text-label">DeepSeek 4 Pro</dd>
+                <dt>Scene images</dt>
+                <dd id="route-image-label">Seedream 5.0 Pro</dd>
+                <dt>Key storage</dt>
+                <dd>AES-256-GCM encrypted</dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- DOCS TAB                                                       -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-docs" role="tabpanel">
+        <div class="card">
+          <h2 class="card-title">Documentation</h2>
+          <p class="hint">A complete guide to generating ideas, building a story, producing images, reviewing, and publishing with Project Workflow.</p>
+          <nav class="docs-toc" aria-label="On this page">
+            <a href="#docs-overview">Overview</a>
+            <a href="#docs-start">Getting started</a>
+            <a href="#docs-workflow">The workflow</a>
+            <a href="#docs-ideas">Idea Generator</a>
+            <a href="#docs-projects">Project Management</a>
+            <a href="#docs-reference">Reference Stage</a>
+            <a href="#docs-story">Story Workspace</a>
+            <a href="#docs-generation">Generation Stage</a>
+            <a href="#docs-review">Review &amp; Library</a>
+            <a href="#docs-sidebar">Sidebar &amp; bots</a>
+            <a href="#docs-settings">Settings</a>
+            <a href="#docs-approval">AI safety &amp; approval</a>
+            <a href="#docs-faq">FAQ &amp; troubleshooting</a>
+          </nav>
+        </div>
+
+        <div class="card" id="docs-overview">
+          <h2 class="card-title">Overview</h2>
+          <p>Project Workflow turns a rough idea into a production-ready, photorealistic story. It uses DeepSeek for text generation, an image model (Seedream 5.0 Pro) for scene images, and your own API keys — which are encrypted at rest on the server and never sent back to the browser.</p>
+          <p>The app is organized into tabs that follow a natural pipeline:</p>
+          <ol class="docs-list">
+            <li><strong>Idea Generator</strong> — brainstorm concepts from a context.</li>
+            <li><strong>Project Management</strong> — organize ideas into projects and move them through stages.</li>
+            <li><strong>Reference Stage</strong> — generate detailed reference material, scene outline, and character references.</li>
+            <li><strong>Story Workspace</strong> — structure the brief, character bibles, locations, style, scenes, and character sheets.</li>
+            <li><strong>Generation Stage</strong> — write image prompts and generate scene images.</li>
+            <li><strong>Library</strong> — browse, review, and publish the images you produced.</li>
+            <li><strong>Settings</strong> — manage API keys, models, the Guide chat, and the Reviewer bot.</li>
+          </ol>
+        </div>
+
+        <div class="card" id="docs-start">
+          <h2 class="card-title">Getting started</h2>
+          <ol class="docs-list">
+            <li><strong>Create an account</strong> and sign in.</li>
+            <li>Open <strong>Settings</strong> and save a <strong>DeepSeek API key</strong>. This unlocks ideas, references, scene prompts, the Guide chat, and the Reviewer bot.</li>
+            <li>To generate images, add a <strong>BytePlus</strong> key in Settings.</li>
+            <li>Optionally add an <strong>Anthropic</strong> and/or <strong>OpenAI-compatible</strong> key to use other models for the Guide chat and Reviewer bot.</li>
+          </ol>
+          <p class="hint">Keys are stored encrypted (AES-256-GCM) on the server. The UI only ever shows a masked hint such as <code>sk-…abc123</code>.</p>
+        </div>
+
+        <div class="card" id="docs-workflow">
+          <h2 class="card-title">The workflow</h2>
+          <p>A project moves through three stages plus review:</p>
+          <div class="docs-callout">
+            <strong>Idea Stage → Reference Stage → Generation Stage → Review/Complete</strong>
+          </div>
+          <ul class="docs-list">
+            <li><strong>Idea Stage</strong>: the project holds the raw concept.</li>
+            <li><strong>Reference Stage</strong>: generate and save reference material (this also fills the Story Workspace with reviewable drafts).</li>
+            <li><strong>Generation Stage</strong>: generate prompts and images per scene.</li>
+            <li><strong>Done</strong>: mark a project complete when it is finished; completed projects stay in the Library.</li>
+          </ul>
+          <p>The left sidebar's <strong>Workflow checklist</strong> shows, for the selected project, which steps are already finished.</p>
+        </div>
+
+        <div class="card" id="docs-ideas">
+          <h2 class="card-title">Idea Generator</h2>
+          <h3>Context</h3>
+          <p>Paste background text, topic, constraints, or notes into the <strong>Context</strong> box — or drop a <code>.txt</code> file. The context is saved on your device and stays until you clear it with <strong>✕ Clear context</strong>.</p>
+          <h3>Generating ideas</h3>
+          <ol class="docs-list">
+            <li>Pick a model and the number of ideas.</li>
+            <li>Click <strong>✨ Generate ideas</strong>.</li>
+            <li>Tick the ideas you want, then either <strong>⬇ Export as .txt</strong> or <strong>➜ Send to Project Management</strong>.</li>
+          </ol>
+          <p class="hint">Sending ideas to Project Management creates one project per selected idea in <strong>Idea Stage</strong>.</p>
+        </div>
+
+        <div class="card" id="docs-projects">
+          <h2 class="card-title">Project Management</h2>
+          <p>Projects are grouped by stage. Each project card lets you:</p>
+          <ul class="docs-list">
+            <li><strong>✎ Edit</strong> — change the title, idea, description, stage, status, priority, or reference material.</li>
+            <li><strong>→ Generation</strong> — move a Reference Stage project forward (requires saved reference material).</li>
+            <li><strong>✓ Complete / ↩ Reopen</strong> — mark a project done or bring it back.</li>
+            <li><strong>Episodes</strong> — group a project's assets into episodes.</li>
+            <li><strong>🗑 Delete</strong> — remove the project (assets are archived, not destroyed).</li>
+          </ul>
+          <p>Use the search box and the status filter to find projects, and <strong>⬇ Export</strong> to save a text snapshot.</p>
+        </div>
+
+        <div class="card" id="docs-reference">
+          <h2 class="card-title">Reference Stage</h2>
+          <ol class="docs-list">
+            <li>Choose a <strong>Reference Stage</strong> project.</li>
+            <li>Add between <strong>1 and 4 characters</strong> (name + gender) and an optional <strong>setting</strong>.</li>
+            <li>Click <strong>✨ Generate reference material</strong>.</li>
+          </ol>
+          <p>Use <strong>Use guide</strong> under the Setting field to ask the Guide for a setting suggestion for the current reference project. The Guide opens automatically with the prompt filled in.</p>
+          <p>DeepSeek returns human-readable reference material (7 numbered sections), a chronological scene outline, standalone character references, <em>and</em> a structured Story Workspace payload.</p>
+          <div class="docs-callout docs-callout-note">
+            <strong>Nothing is auto-approved.</strong> The structured drafts (brief, characters, locations, style, scenes) are created as <em>drafts awaiting review</em>. Regenerating will ask you to confirm before it replaces existing records.
+          </div>
+          <p>You can edit the reference text and click <strong>💾 Save reference</strong>, or <strong>↻ Regenerate</strong> to try again.</p>
+        </div>
+
+        <div class="card" id="docs-story">
+          <h2 class="card-title">Story Workspace</h2>
+          <p>The Story Workspace is the canonical, structured root of the story. It is built from reference generation and fully editable by hand.</p>
+          <h3>Story brief</h3>
+          <p>Title, logline, premise, tone, genre, audience, and setting summary. Edit and <strong>Save brief</strong>.</p>
+          <h3>Character bibles</h3>
+          <p>Each character has name, gender, age, appearance, wardrobe, and continuity notes, plus any legacy reference material. Click <strong>✓ Approve</strong> to mark a character canonical.</p>
+          <h3>Locations</h3>
+          <p>Each location has a description, lighting, and continuity notes. Approve locations the same way.</p>
+          <h3>Style references</h3>
+          <p>A visual style with description, guidance, and negative exclusions. Approve to mark it canonical.</p>
+          <h3>Scene matrix</h3>
+          <p>Each scene has a title, beat, props, action, and links to a location and characters. Only approved locations/characters can be linked for scenes you save manually.</p>
+          <h3>Character sheets</h3>
+          <p>Pick a character and <strong>✨ Generate character sheet</strong> to produce a photorealistic reference <em>image</em> (full-body, canonical wardrobe and appearance) from their bible and style. Each generation creates a new version; promote one to <strong>final</strong>.</p>
+          <h3>Approval</h3>
+          <p>Generated records start <strong>unapproved</strong>. Approve character, location, and style references explicitly. <strong>Check continuity</strong> reports genuine missing information and pending approvals — it never approves anything by itself.</p>
+        </div>
+
+        <div class="card" id="docs-generation">
+          <h2 class="card-title">Generation Stage</h2>
+          <ol class="docs-list">
+            <li>Choose a <strong>Generation Stage</strong> project (it must already have reference material).</li>
+            <li>Review the scene list, then click <strong>Generate prompts</strong> to write one photorealistic image prompt per scene.</li>
+            <li>Edit or <strong>Regenerate</strong> individual prompts as needed.</li>
+            <li>Choose an image size and click <strong>Generate image</strong> for each scene.</li>
+          </ol>
+          <p>You can also <strong>upload</strong> your own PNG/JPEG/WebP image for a scene. Generated and uploaded images are stored in the Library.</p>
+        </div>
+
+        <div class="card" id="docs-review">
+          <h2 class="card-title">Review &amp; Library</h2>
+          <p>The Library lists every image the app has produced or you have uploaded, with filtering by project, episode, collection, tag, type, and status.</p>
+          <h3>Reviewing an image</h3>
+          <ul class="docs-list">
+            <li>Record a review decision: <strong>REVISE</strong>, <strong>REJECT</strong>, <strong>OWNER REVIEW</strong>, or <strong>APPROVED</strong>.</li>
+            <li>Complete the <strong>checklist</strong> (rights, adult-character, consent, explicitness, AI-label, placement, quality).</li>
+            <li>Choose a <strong>safe cover</strong> revision if needed.</li>
+            <li>Record a <strong>publication decision</strong> only when the evidence is complete.</li>
+          </ul>
+          <p class="hint">Approval and publication are separate, explicit human actions. A new revision invalidates prior review evidence.</p>
+        </div>
+
+        <div class="card" id="docs-sidebar">
+          <h2 class="card-title">Sidebar, Guide &amp; Reviewer</h2>
+          <h3>Workflow checklist</h3>
+          <p>The Guide view shows a fixed checklist (Idea → Reference → Story brief → Characters → Locations → Style → Scenes → Prompts → Images → Completed) for the selected project.</p>
+          <h3>Guide</h3>
+          <p><strong>Guide</strong> is a persistent chat that walks you through the workflow and suggests the next concrete action.</p>
+          <h3>Reviewer</h3>
+          <p><strong>Reviewer</strong> is a field-by-field review bot. Choose a project and a section (for example <em>Scene Prompts</em>), then click <strong>Review</strong>. It checks every field in that section against the project context.</p>
+          <ul class="docs-list">
+            <li><strong>Purple ring</strong> — the field is processing.</li>
+            <li><strong>Green check</strong> — the field was reviewed without blocking issues.</li>
+            <li><strong>Red X</strong> — the field failed review or the check could not complete.</li>
+          </ul>
+          <p>Click <strong>Details</strong> to open a pop-up with each field's summary, findings, suggestions, model, and review time. Review results are an automated check — they are not a human approval or publication decision. Results are cached per field, so unchanged content is not re-reviewed.</p>
+          <p>Change the provider, model, and extra instructions for the Guide chat and Reviewer bot in <strong>Settings → Chat assistants</strong>.</p>
+        </div>
+
+        <div class="card" id="docs-settings">
+          <h2 class="card-title">Settings</h2>
+          <ul class="docs-list">
+            <li><strong>DeepSeek API</strong> — key for ideas, references, scene prompts, and the default chat.</li>
+            <li><strong>BytePlus image API</strong> — key for Seedream image generation.</li>
+            <li><strong>Anthropic API</strong> — key for Claude models in the chat.</li>
+            <li><strong>OpenAI-compatible API</strong> — key and base URL for any OpenAI-compatible provider.</li>
+            <li><strong>Default models</strong> — the text and image models used across the app.</li>
+            <li><strong>Chat assistants</strong> — per-assistant provider, model, and pasted context for the Guide chat and Reviewer bot.</li>
+          </ul>
+        </div>
+
+        <div class="card" id="docs-approval">
+          <h2 class="card-title">AI safety &amp; approval</h2>
+          <p>Project Workflow keeps a hard boundary between <strong>generation</strong> and <strong>approval</strong>:</p>
+          <ul class="docs-list">
+            <li>AI generates drafts; it never marks anything approved, final, or published.</li>
+            <li>Reference, Story Workspace, prompt, and image approvals are always explicit human actions.</li>
+            <li>Continuity warnings reflect genuine missing information or pending approvals — not information lost during import.</li>
+            <li>Regenerating never silently overwrites your edits or approvals; it asks for confirmation first.</li>
+          </ul>
+        </div>
+
+        <div class="card" id="docs-faq">
+          <h2 class="card-title">FAQ &amp; troubleshooting</h2>
+          <dl class="api-routing docs-faq">
+            <dt>“No API key is saved for your account”</dt>
+            <dd>Add the corresponding key in Settings (DeepSeek, Anthropic, or OpenAI-compatible, depending on the assistant/model you are using).</dd>
+            <dt>“Your API key was rejected (401)”</dt>
+            <dd>The key is invalid or revoked. Update it in Settings.</dd>
+            <dt>“Rate limit reached (429)”</dt>
+            <dd>Too many requests. Wait a moment and try again.</dd>
+            <dt>“Insufficient balance (402)”</dt>
+            <dd>The provider account has no remaining balance.</dd>
+            <dt>“Generate and save reference material first”</dt>
+            <dd>A project must have reference material before it can enter Generation Stage.</dd>
+            <dt>“Structured Story Workspace drafts already exist”</dt>
+            <dd>Regenerating would replace existing records; confirm the replacement to continue.</dd>
+            <dt>“A scene links to a character/location that is not approved”</dt>
+            <dd>Approve the referenced character or location in Story Workspace before saving that scene link.</dd>
+          </dl>
+        </div>
+      </section>
+    </main>
+    </div>
+
+    <div class="process-widget hidden" id="process-widget" aria-live="polite">
+      <div class="process-head">
+        <span class="spinner-ring process-spinner"></span>
+        <strong>Processing</strong>
+        <span class="process-count" id="process-count">0</span>
+      </div>
+      <div class="process-list" id="process-list"></div>
+    </div>
+
+    <!-- Library image detail -->
+    <div class="modal-backdrop hidden" id="library-modal">
+      <div class="modal library-modal" role="dialog" aria-modal="true" aria-labelledby="library-modal-title" tabindex="-1">
+        <div class="library-modal-head">
+          <h2 class="modal-title" id="library-modal-title">Image details</h2>
+          <button class="btn btn-ghost" id="library-modal-close" type="button" aria-label="Close image details">✕</button>
+        </div>
+        <div class="library-detail-grid">
+          <div class="library-preview">
+            <img id="library-preview" alt="" />
+            <div class="library-preview-error hidden" id="library-preview-error">Preview unavailable</div>
+          </div>
+          <div class="library-facts">
+            <h3 id="library-detail-name">Image</h3>
+            <dl id="library-file-facts"></dl>
+            <p class="library-asset-note">Asset only. Generation approval and publication approval are separate and are shown only when recorded.</p>
+          </div>
+        </div>
+        <div class="library-metadata">
+          <h3>Asset metadata</h3>
+          <dl id="library-metadata-list"></dl>
+          <div class="library-prompt-block hidden" id="library-prompt-block">
+            <h4>Prompt provenance</h4>
+            <pre id="library-prompt"></pre>
+          </div>
+        </div>
+        <div class="library-organize">
+          <h3>Organization</h3>
+          <dl class="library-organize-facts">
+            <dt>Tags</dt><dd id="library-asset-tags">Not recorded</dd>
+            <dt>Collections</dt><dd id="library-asset-collections">Not recorded</dd>
+          </dl>
+          <div class="library-organize-row">
+            <input type="text" id="library-tag-input" maxlength="80" placeholder="New or existing tag" />
+            <button class="btn btn-secondary btn-sm" id="library-add-tag" type="button">Add tag</button>
+          </div>
+          <div class="library-organize-row">
+            <select id="library-collection-select"></select>
+            <button class="btn btn-secondary btn-sm" id="library-add-collection" type="button">Add to collection</button>
+          </div>
+          <div class="library-organize-row">
+            <input type="text" id="library-new-collection" maxlength="200" placeholder="Create a collection" />
+            <button class="btn btn-ghost btn-sm" id="library-create-collection" type="button">Create</button>
+          </div>
+          <div class="library-organize-row">
+            <select id="library-episode-select"></select>
+            <button class="btn btn-secondary btn-sm" id="library-set-episode" type="button">Set episode</button>
+          </div>
+        </div>
+        <div class="review-panel">
+          <div class="review-head">
+            <h3>Review &amp; publication</h3>
+            <span class="story-badge draft" id="review-status">Not reviewed</span>
+          </div>
+          <p class="hint" id="review-hint">Content review, checklists, and publication are separate decisions.</p>
+          <div class="review-grid">
+            <label class="field">
+              <span class="field-label">Content decision</span>
+              <select id="review-decision">
+                <option value="">Choose decision</option>
+                <option value="APPROVED">APPROVED</option>
+                <option value="REVISE">REVISE</option>
+                <option value="REJECT">REJECT</option>
+                <option value="OWNER REVIEW">OWNER REVIEW</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Reviewer notes</span>
+              <textarea id="review-notes" rows="3" maxlength="5000"></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">Unresolved blockers (one per line)</span>
+              <textarea id="review-blockers" rows="2" maxlength="5000"></textarea>
+            </label>
+            <button class="btn btn-primary btn-sm" id="review-save" type="button">Record review decision</button>
+          </div>
+
+          <h4>Checklist</h4>
+          <div id="review-checklist"></div>
+          <button class="btn btn-secondary btn-sm" id="review-save-checklist" type="button">Save checklist</button>
+
+          <h4>Safe cover</h4>
+          <div class="review-row">
+            <select id="review-cover-select" aria-label="Safe cover version"></select>
+            <button class="btn btn-secondary btn-sm" id="review-set-cover" type="button">Set safe cover</button>
+            <span class="hint" id="review-cover-status">No safe cover designated.</span>
+          </div>
+
+          <h4>Publication approval</h4>
+          <p class="hint" id="review-publication-status">Publication is separate from content review.</p>
+          <textarea id="review-publication-notes" rows="2" maxlength="5000" placeholder="Publication decision notes"></textarea>
+          <div class="review-actions">
+            <button class="btn btn-primary btn-sm" id="review-publication-approve" type="button">Record publication approval</button>
+            <button class="btn btn-ghost btn-sm" id="review-publication-decline" type="button">Record not approved</button>
+          </div>
+
+          <h4>Continuity checks</h4>
+          <div id="review-continuity"></div>
+
+          <h4>Compare revisions</h4>
+          <div class="review-row">
+            <select id="review-compare-a" aria-label="First revision"></select>
+            <select id="review-compare-b" aria-label="Second revision"></select>
+            <button class="btn btn-secondary btn-sm" id="review-compare-btn" type="button">Compare side by side</button>
+          </div>
+          <div id="review-compare" class="review-compare"></div>
+
+          <h4>Audit history <span class="hint">(read-only)</span></h4>
+          <div id="review-audit"></div>
+        </div>
+        <div class="library-revisions">
+          <h3>Revision history</h3>
+          <div id="library-versions"></div>
+          <h3>Duplicate content</h3>
+          <div id="library-duplicates">Not recorded</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Episodes manager -->
+    <div class="modal-backdrop hidden" id="episodes-modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="episodes-modal-title">
+        <div class="library-modal-head">
+          <h2 class="modal-title" id="episodes-modal-title">Episodes</h2>
+          <button class="btn btn-ghost" id="episodes-modal-close" type="button" aria-label="Close episodes">✕</button>
+        </div>
+        <p class="hint" id="episodes-project-label"></p>
+        <div id="episodes-list"></div>
+        <div class="library-organize-row">
+          <input type="text" id="episode-title-input" maxlength="200" placeholder="Episode title" />
+          <button class="btn btn-primary" id="episode-add-btn" type="button">Add episode</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reviewer field detail -->
+    <div class="modal-backdrop hidden" id="reviewer-modal">
+      <div class="modal reviewer-modal" role="dialog" aria-modal="true" aria-labelledby="reviewer-modal-title" tabindex="-1">
+        <div class="library-modal-head">
+          <div>
+            <h2 class="modal-title" id="reviewer-modal-title">Review details</h2>
+            <p class="hint" id="reviewer-modal-subtitle"></p>
+          </div>
+          <button class="btn btn-ghost" id="reviewer-modal-close" type="button" aria-label="Close review details">✕</button>
+        </div>
+        <div class="reviewer-detail-list" id="reviewer-detail-list"></div>
+      </div>
+    </div>
+
+    <!-- Project edit modal -->
+    <div class="modal-backdrop hidden" id="modal">
+      <div class="modal">
+        <h2 class="modal-title" id="modal-title">New project</h2>
+        <label class="field">
+          <span class="field-label">Title</span>
+          <input type="text" id="pm-title" placeholder="Project title" maxlength="200" />
+        </label>
+        <label class="field">
+          <span class="field-label">Idea</span>
+          <textarea id="pm-idea" rows="4" placeholder="Imported idea or the raw concept behind this project" maxlength="5000"></textarea>
+        </label>
+        <label class="field">
+          <span class="field-label">Description</span>
+          <textarea id="pm-description" rows="4" placeholder="Optional details, plan, or notes" maxlength="5000"></textarea>
+        </label>
+        <div class="modal-row three">
+          <label class="field">
+            <span class="field-label">Stage</span>
+            <select id="pm-stage">
+              <option value="Idea Stage">Idea Stage</option>
+              <option value="Reference Stage">Reference Stage</option>
+              <option value="Generation Stage">Generation Stage</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Status</span>
+            <select id="pm-status">
+              <option value="Not Started" selected>Not Started</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Done">Done</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Priority</span>
+            <select id="pm-priority">
+              <option value="Low">Low</option>
+              <option value="Medium" selected>Medium</option>
+              <option value="High">High</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">Reference Material</span>
+          <textarea id="pm-reference" rows="6" placeholder="Generated reference material appears here" maxlength="200000"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="modal-cancel" type="button">Cancel</button>
+          <button class="btn btn-primary" id="modal-save" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="app.js?v=2026-10-24.31"></script>
+</body>
+</html>

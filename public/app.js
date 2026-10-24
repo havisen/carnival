@@ -1,0 +1,5374 @@
+'use strict';
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+const state = {
+  user: null,           // { id, username, hasApiKey, apiKeyHint }
+  ideas: [],            // [{ title, description }]
+  selected: new Set(),  // indices into state.ideas
+  projects: [],         // [{ id, title, idea, description, referenceMaterial, stage, status, priority, createdAt }]
+  editingId: null,      // project being edited in the modal
+  episodesProjectId: null,
+  stageFilter: 'Idea Stage',
+  reference: {
+    projectId: null,
+    count: 1,
+    dirty: false,
+    // Keep a pool of four so changing the character count does not erase input.
+    characters: [
+      { name: '', gender: 'Male' },
+      { name: '', gender: 'Male' },
+      { name: '', gender: 'Male' },
+      { name: '', gender: 'Male' },
+    ],
+  },
+  generation: {
+    projectId: null,
+    scenes: [],
+    prompts: [],
+    images: [],
+    characters: [],
+    characterSheets: [],
+  },
+  library: {
+    loaded: false,
+    loading: false,
+    images: [],
+    collections: [],
+    error: null,
+    search: '',
+    selectedId: null,
+    selectedAssetId: null,
+    currentAsset: null,
+    reviewData: null,
+    filters: {
+      projectId: '',
+      episodeId: '',
+      collectionId: '',
+      tag: '',
+      type: '',
+      status: '',
+      duplicate: false,
+      missing: false,
+      unassigned: false,
+    },
+  },
+  story: {
+    loaded: false,
+    loading: false,
+    projectId: '',
+    data: null,
+    error: null,
+    editor: null,
+    dirty: false,
+    sheetCharacterId: '',
+  },
+  sidebar: {
+    projectId: '',
+    story: null,
+    storyProjectId: '',
+  },
+  chat: {
+    mode: 'guide',
+    guide: [],
+    reviewer: [],
+    busy: false,
+  },
+  reviewer: {
+    projectId: '',
+    box: 'scene-prompts',
+    fields: [],
+    loading: false,
+    running: false,
+    error: '',
+    loadToken: 0,
+    runToken: 0,
+    loadedProjectId: '',
+    loadedBox: '',
+  },
+};
+
+const AUTH_TAB_KEY = 'projectWorkflow.lastTab';
+const PROJECT_STATUSES = ['Not Started', 'In Progress', 'Done'];
+const PROJECT_STAGES = ['Idea Stage', 'Reference Stage', 'Generation Stage'];
+const PM_TABS = [...PROJECT_STAGES, 'Completed'];
+const REVIEWER_BOX_OPTIONS = [
+  { id: 'scene-prompts', label: 'Scene Prompts' },
+  { id: 'scene-outline', label: 'Scene Outline' },
+  { id: 'story-brief', label: 'Story Brief' },
+  { id: 'characters', label: 'Character Bibles' },
+  { id: 'locations', label: 'Locations' },
+  { id: 'styles', label: 'Style References' },
+  { id: 'reference-material', label: 'Reference Material' },
+  { id: 'project-details', label: 'Project Details' },
+];
+
+// ---------------------------------------------------------------------------
+// DOM helpers
+// ---------------------------------------------------------------------------
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+function toast(message, type = '') {
+  const el = $('#toast');
+  el.textContent = message;
+  el.className = 'toast ' + type;
+  el.classList.remove('hidden');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.add('hidden'), 3600);
+}
+
+// ---------------------------------------------------------------------------
+// Floating process tracker
+// ---------------------------------------------------------------------------
+const activeProcesses = new Map();
+let processSequence = 0;
+let processTimer = null;
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function renderProcesses() {
+  const widget = $('#process-widget');
+  const list = $('#process-list');
+  if (!widget || !list) return;
+
+  list.innerHTML = '';
+  if (!activeProcesses.size) {
+    widget.classList.add('hidden');
+    if (processTimer) {
+      clearInterval(processTimer);
+      processTimer = null;
+    }
+    return;
+  }
+
+  widget.classList.remove('hidden');
+  $('#process-count').textContent = String(activeProcesses.size);
+
+  Array.from(activeProcesses.values())
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .forEach((process) => {
+      const row = document.createElement('div');
+      row.className = 'process-item';
+
+      const spinner = document.createElement('span');
+      spinner.className = 'spinner-ring process-spinner';
+
+      const label = document.createElement('span');
+      label.className = 'process-item-label';
+      label.textContent = process.label;
+
+      const time = document.createElement('span');
+      time.className = 'process-time';
+      time.textContent = formatElapsed(Date.now() - process.startedAt);
+
+      row.append(spinner, label, time);
+      list.appendChild(row);
+    });
+
+  if (!processTimer) {
+    processTimer = setInterval(renderProcesses, 1000);
+  }
+}
+
+function startProcess(label) {
+  const id = `process-${++processSequence}`;
+  activeProcesses.set(id, { label, startedAt: Date.now() });
+  renderProcesses();
+  return id;
+}
+
+function updateProcess(id, label) {
+  const process = activeProcesses.get(id);
+  if (!process) return;
+  process.label = label;
+  renderProcesses();
+}
+
+function finishProcess(id) {
+  if (!id) return;
+  activeProcesses.delete(id);
+  renderProcesses();
+}
+
+function clearProcesses() {
+  activeProcesses.clear();
+  renderProcesses();
+}
+
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// API client
+// ---------------------------------------------------------------------------
+class ApiError extends Error {
+  constructor(message, status, code) {
+    super(message);
+    this.status = status;
+    this.code = code || null;
+  }
+}
+
+async function api(path, { method = 'GET', body } = {}) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (_) {
+    throw new ApiError('Network error. Check your connection and try again.', 0);
+  }
+
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = null;
+    }
+  }
+
+  if (!res.ok) {
+    if (res.status === 401 && state.user) {
+      expireSession();
+    }
+    throw new ApiError(
+      (data && data.error) || `Request failed (${res.status}).`,
+      res.status,
+      data && data.code
+    );
+  }
+  return data || {};
+}
+
+// ---------------------------------------------------------------------------
+// Auth screen
+// ---------------------------------------------------------------------------
+let authMode = 'login';
+
+function setAuthMode(mode) {
+  authMode = mode;
+  $$('.auth-tab').forEach((tab) => {
+    const active = tab.dataset.authTab === mode;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+  });
+  $('#auth-submit').textContent = mode === 'login' ? 'Sign in' : 'Create account';
+  $('#auth-password').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+  $('#auth-error').classList.add('hidden');
+  try {
+    localStorage.setItem(AUTH_TAB_KEY, mode);
+  } catch (_) { /* ignore */ }
+}
+
+function showAuthError(message) {
+  const el = $('#auth-error');
+  el.textContent = message;
+  el.classList.remove('hidden');
+}
+
+function hideBoot() {
+  const boot = $('#boot-screen');
+  if (boot) boot.classList.add('hidden');
+}
+
+function showAuth() {
+  state.user = null;
+  hideBoot();
+  $('#app-shell').classList.add('hidden');
+  $('#auth-screen').classList.remove('hidden');
+  $('#auth-password').value = '';
+  $('#api-key').value = '';
+  setAuthMode(authMode === 'register' ? 'register' : 'login');
+}
+
+function showApp() {
+  hideBoot();
+  $('#auth-screen').classList.add('hidden');
+  $('#app-shell').classList.remove('hidden');
+  $('#user-name').textContent = '@' + state.user.username;
+  renderKeyState();
+  renderBytePlusKeyState();
+  renderAnthropicKeyState();
+  renderOpenAIKeyState();
+  applyAiSettings();
+  applyChatSettings();
+}
+
+function expireSession() {
+  state.user = null;
+  state.projects = [];
+  state.ideas = [];
+  state.selected.clear();
+  clearProcesses();
+  resetLibrary();
+  resetSidebarAndChat();
+  setStageFilter('Idea Stage');
+  authMode = 'login';
+  showAuth();
+  toast('Your session expired. Please sign in again.', 'error');
+}
+
+async function enterApp() {
+  showApp();
+  try {
+    await loadProjects();
+  } catch (err) {
+    if (err.status !== 401) toast(err.message || 'Could not load projects.', 'error');
+  }
+  await importLegacyProjects();
+  renderIdeas();
+}
+
+async function initAuth() {
+  try {
+    const { user } = await api('/api/auth/me');
+    state.user = user;
+    await enterApp();
+  } catch (err) {
+    if (err.status === 401) {
+      showAuth();
+    } else {
+      showAuth();
+      showAuthError(err.message || 'Could not reach the server.');
+    }
+  }
+}
+
+$$('.auth-tab').forEach((tab) => {
+  tab.addEventListener('click', () => setAuthMode(tab.dataset.authTab));
+});
+
+$('#auth-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const username = $('#auth-username').value.trim();
+  const password = $('#auth-password').value;
+
+  if (!username || !password) {
+    showAuthError('Enter your username and password.');
+    return;
+  }
+
+  const submit = $('#auth-submit');
+  submit.disabled = true;
+  submit.textContent = authMode === 'login' ? 'Signing in…' : 'Creating account…';
+
+  try {
+    const { user } = await api('/api/auth/' + authMode, {
+      method: 'POST',
+      body: { username, password },
+    });
+    state.user = user;
+    $('#auth-password').value = '';
+    await enterApp();
+    toast(authMode === 'login' ? `Welcome back, ${user.username}.` : 'Account created.', 'success');
+  } catch (err) {
+    showAuthError(err.message);
+  } finally {
+    submit.disabled = false;
+    submit.textContent = authMode === 'login' ? 'Sign in' : 'Create account';
+  }
+});
+
+$('#logout-btn').addEventListener('click', async () => {
+  try {
+    await api('/api/auth/logout', { method: 'POST' });
+  } catch (_) { /* signing out locally is enough */ }
+
+  state.user = null;
+  state.projects = [];
+  state.ideas = [];
+  state.selected.clear();
+  clearProcesses();
+  resetLibrary();
+  state.reference.projectId = null;
+  state.reference.dirty = false;
+  state.reference.count = 1;
+  state.reference.characters = [
+    { name: '', gender: 'Male' },
+    { name: '', gender: 'Male' },
+    { name: '', gender: 'Male' },
+    { name: '', gender: 'Male' },
+  ];
+  state.generation.projectId = null;
+  state.generation.scenes = [];
+  state.generation.prompts = [];
+  state.generation.images = [];
+  resetSidebarAndChat();
+  $('#ref-character-count').value = '1';
+  $('#ref-setting').value = '';
+  setStageFilter('Idea Stage');
+  renderCharacterFields();
+  renderProjects();
+  renderIdeas();
+  renderReferenceProjects();
+  renderGenerationProjects();
+  renderChat();
+  authMode = 'login';
+  showAuth();
+  toast('Signed out.');
+});
+
+// ---------------------------------------------------------------------------
+// API key (stored server-side; only the masked hint comes back)
+// ---------------------------------------------------------------------------
+function renderKeyState() {
+  const saved = Boolean(state.user && state.user.hasApiKey);
+  $('#key-empty').classList.toggle('hidden', saved);
+  $('#key-saved').classList.toggle('hidden', !saved);
+  $('#key-hint').textContent = saved ? state.user.apiKeyHint || 'saved key' : '—';
+  $('#key-label').textContent = saved ? 'Replace DeepSeek API key' : 'Add DeepSeek API key';
+  $('#save-key').textContent = saved ? 'Update key' : 'Save key';
+  $('#remove-key').classList.toggle('hidden', !saved);
+
+  const status = $('#apis-deepseek-status');
+  status.textContent = saved ? 'DeepSeek: connected' : 'DeepSeek: no key';
+  status.classList.toggle('connected', saved);
+  status.classList.toggle('missing', !saved);
+}
+
+$('#toggle-key').addEventListener('click', () => {
+  const input = $('#api-key');
+  const isPassword = input.type === 'password';
+  input.type = isPassword ? 'text' : 'password';
+  $('#toggle-key').textContent = isPassword ? '🙈' : '👁';
+});
+
+$('#save-key').addEventListener('click', async () => {
+  const apiKey = $('#api-key').value.trim();
+  if (!apiKey) {
+    toast('Paste your DeepSeek API key first.', 'error');
+    $('#api-key').focus();
+    return;
+  }
+
+  const button = $('#save-key');
+  button.disabled = true;
+  try {
+    const { user } = await api('/api/me/api-key', { method: 'PUT', body: { apiKey } });
+    state.user = user;
+    $('#api-key').value = '';
+    renderKeyState();
+    renderChat();
+    toast('API key saved to your account.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the API key.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#remove-key').addEventListener('click', async () => {
+  if (!confirm('Remove the saved DeepSeek API key from your account?')) return;
+  try {
+    const { user } = await api('/api/me/api-key', { method: 'DELETE' });
+    state.user = user;
+    renderKeyState();
+    renderChat();
+    toast('Saved API key removed.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not remove the API key.', 'error');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// BytePlus image API key
+// ---------------------------------------------------------------------------
+function renderBytePlusKeyState() {
+  const saved = Boolean(state.user && state.user.hasBytePlusKey);
+  $('#bp-key-empty').classList.toggle('hidden', saved);
+  $('#bp-key-saved').classList.toggle('hidden', !saved);
+  $('#bp-key-hint').textContent = saved ? state.user.byteplusKeyHint || 'saved key' : '—';
+  $('#bp-key-label').textContent = saved ? 'Replace BytePlus API key' : 'Add BytePlus API key';
+  $('#bp-save-key').textContent = saved ? 'Update key' : 'Save key';
+  $('#bp-remove-key').classList.toggle('hidden', !saved);
+
+  const status = $('#apis-byteplus-status');
+  status.textContent = saved ? 'BytePlus: connected' : 'BytePlus: no key';
+  status.classList.toggle('connected', saved);
+  status.classList.toggle('missing', !saved);
+}
+
+$('#bp-toggle-key').addEventListener('click', () => {
+  const input = $('#bp-api-key');
+  const isPassword = input.type === 'password';
+  input.type = isPassword ? 'text' : 'password';
+  $('#bp-toggle-key').textContent = isPassword ? '🙈' : '👁';
+});
+
+$('#bp-save-key').addEventListener('click', async () => {
+  const apiKey = $('#bp-api-key').value.trim();
+  if (!apiKey) {
+    toast('Paste your BytePlus API key first.', 'error');
+    $('#bp-api-key').focus();
+    return;
+  }
+
+  const button = $('#bp-save-key');
+  button.disabled = true;
+  try {
+    const { user } = await api('/api/me/byteplus-key', { method: 'PUT', body: { apiKey } });
+    state.user = user;
+    $('#bp-api-key').value = '';
+    renderBytePlusKeyState();
+    toast('BytePlus API key saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the BytePlus API key.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#bp-remove-key').addEventListener('click', async () => {
+  if (!confirm('Remove the saved BytePlus API key from your account?')) return;
+  try {
+    const { user } = await api('/api/me/byteplus-key', { method: 'DELETE' });
+    state.user = user;
+    renderBytePlusKeyState();
+    toast('Saved BytePlus API key removed.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not remove the BytePlus API key.', 'error');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Anthropic API key
+// ---------------------------------------------------------------------------
+function renderAnthropicKeyState() {
+  const saved = Boolean(state.user && state.user.hasAnthropicKey);
+  $('#anthropic-key-empty').classList.toggle('hidden', saved);
+  $('#anthropic-key-saved').classList.toggle('hidden', !saved);
+  $('#anthropic-key-hint').textContent = saved ? state.user.anthropicKeyHint || 'saved key' : '—';
+  $('#anthropic-key-label').textContent = saved ? 'Replace Anthropic API key' : 'Add Anthropic API key';
+  $('#anthropic-save-key').textContent = saved ? 'Update key' : 'Save key';
+  $('#anthropic-remove-key').classList.toggle('hidden', !saved);
+}
+
+$('#anthropic-toggle-key').addEventListener('click', () => {
+  const input = $('#anthropic-api-key');
+  const isPassword = input.type === 'password';
+  input.type = isPassword ? 'text' : 'password';
+  $('#anthropic-toggle-key').textContent = isPassword ? '🙈' : '👁';
+});
+
+$('#anthropic-save-key').addEventListener('click', async () => {
+  const apiKey = $('#anthropic-api-key').value.trim();
+  if (!apiKey) {
+    toast('Paste your Anthropic API key first.', 'error');
+    $('#anthropic-api-key').focus();
+    return;
+  }
+  const button = $('#anthropic-save-key');
+  button.disabled = true;
+  try {
+    const { user } = await api('/api/me/anthropic-key', { method: 'PUT', body: { apiKey } });
+    state.user = user;
+    $('#anthropic-api-key').value = '';
+    renderAnthropicKeyState();
+    renderChat();
+    toast('Anthropic API key saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the Anthropic API key.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#anthropic-remove-key').addEventListener('click', async () => {
+  if (!confirm('Remove the saved Anthropic API key from your account?')) return;
+  try {
+    const { user } = await api('/api/me/anthropic-key', { method: 'DELETE' });
+    state.user = user;
+    renderAnthropicKeyState();
+    renderChat();
+    toast('Saved Anthropic API key removed.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not remove the Anthropic API key.', 'error');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// OpenAI-compatible API key
+// ---------------------------------------------------------------------------
+function renderOpenAIKeyState() {
+  const saved = Boolean(state.user && state.user.hasOpenAIKey);
+  $('#openai-key-empty').classList.toggle('hidden', saved);
+  $('#openai-key-saved').classList.toggle('hidden', !saved);
+  $('#openai-key-hint').textContent = saved ? state.user.openAIKeyHint || 'saved key' : '—';
+  $('#openai-key-label').textContent = saved ? 'Replace OpenAI-compatible API key' : 'Add OpenAI-compatible API key';
+  $('#openai-save-key').textContent = saved ? 'Update key' : 'Save key';
+  $('#openai-remove-key').classList.toggle('hidden', !saved);
+}
+
+$('#openai-toggle-key').addEventListener('click', () => {
+  const input = $('#openai-api-key');
+  const isPassword = input.type === 'password';
+  input.type = isPassword ? 'text' : 'password';
+  $('#openai-toggle-key').textContent = isPassword ? '🙈' : '👁';
+});
+
+$('#openai-save-key').addEventListener('click', async () => {
+  const apiKey = $('#openai-api-key').value.trim();
+  if (!apiKey) {
+    toast('Paste your OpenAI-compatible API key first.', 'error');
+    $('#openai-api-key').focus();
+    return;
+  }
+  const button = $('#openai-save-key');
+  button.disabled = true;
+  try {
+    const { user } = await api('/api/me/openai-key', {
+      method: 'PUT',
+      body: { apiKey, baseUrl: $('#openai-base-url').value.trim() },
+    });
+    state.user = user;
+    $('#openai-api-key').value = '';
+    renderOpenAIKeyState();
+    applyChatSettings();
+    renderChat();
+    toast('OpenAI-compatible API key saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the OpenAI-compatible API key.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#openai-remove-key').addEventListener('click', async () => {
+  if (!confirm('Remove the saved OpenAI-compatible API key from your account?')) return;
+  try {
+    const { user } = await api('/api/me/openai-key', { method: 'DELETE' });
+    state.user = user;
+    renderOpenAIKeyState();
+    applyChatSettings();
+    renderChat();
+    toast('Saved OpenAI-compatible API key removed.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not remove the OpenAI-compatible API key.', 'error');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Chat assistants (Guide + Reviewer)
+// ---------------------------------------------------------------------------
+function applyChatSettings() {
+  if (!state.user) return;
+  $('#guide-provider').value = state.user.guideProvider || 'deepseek';
+  $('#guide-model').value = state.user.guideModel || '';
+  $('#guide-context').value = state.user.guideContext || '';
+  $('#reviewer-provider').value = state.user.reviewerProvider || 'deepseek';
+  $('#reviewer-model').value = state.user.reviewerModel || '';
+  $('#reviewer-context').value = state.user.reviewerContext || '';
+  $('#openai-base-url').value = state.user.openAIBaseUrl || '';
+}
+
+$('#save-chat-settings').addEventListener('click', async () => {
+  const button = $('#save-chat-settings');
+  button.disabled = true;
+  try {
+    const { user } = await api('/api/me/chat-settings', {
+      method: 'PUT',
+      body: {
+        guideProvider: $('#guide-provider').value,
+        guideModel: $('#guide-model').value,
+        guideContext: $('#guide-context').value,
+        reviewerProvider: $('#reviewer-provider').value,
+        reviewerModel: $('#reviewer-model').value,
+        reviewerContext: $('#reviewer-context').value,
+      },
+    });
+    state.user = user;
+    applyChatSettings();
+    renderChat();
+    state.reviewer.loadedProjectId = '';
+    renderReviewer();
+    $('#chat-settings-hint').textContent = 'Chat settings saved.';
+    toast('Chat settings saved.', 'success');
+  } catch (err) {
+    $('#chat-settings-hint').textContent = 'Could not save chat settings.';
+    toast(err.message || 'Could not save chat settings.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AI model preferences
+// ---------------------------------------------------------------------------
+const TEXT_MODEL_LABELS = {
+  'deepseek-v4-pro': 'DeepSeek 4 Pro',
+};
+const IMAGE_MODEL_LABELS = {
+  'dola-seedream-5-0-pro-260628': 'Seedream 5.0 Pro',
+};
+const IMAGE_MODEL_SIZES = {
+  'dola-seedream-5-0-pro-260628': ['1K', '1.5K', '2K'],
+};
+
+function currentTextModel() {
+  return state.user && TEXT_MODEL_LABELS[state.user.textModel]
+    ? state.user.textModel
+    : 'deepseek-v4-pro';
+}
+
+function currentImageModel() {
+  return state.user && IMAGE_MODEL_LABELS[state.user.imageModel]
+    ? state.user.imageModel
+    : 'dola-seedream-5-0-pro-260628';
+}
+
+function applyImageSizeOptions(imageModel) {
+  const select = $('#gen-image-size');
+  const sizes = IMAGE_MODEL_SIZES[imageModel] || IMAGE_MODEL_SIZES['dola-seedream-5-0-pro-260628'];
+  const previous = select.value;
+  select.innerHTML = '';
+  sizes.forEach((size) => {
+    const option = document.createElement('option');
+    option.value = size;
+    option.textContent = size;
+    select.appendChild(option);
+  });
+  select.value = sizes.includes(previous) ? previous : (sizes.includes('2K') ? '2K' : sizes[0]);
+}
+
+function applyAiSettings() {
+  if (!state.user) return;
+  const textModel = currentTextModel();
+  const imageModel = currentImageModel();
+
+  $('#text-model-pref').value = textModel;
+  $('#image-model-pref').value = imageModel;
+  ['#model', '#ref-model', '#gen-model'].forEach((selector) => {
+    const input = $(selector);
+    if (input) input.value = textModel;
+  });
+
+  $('#route-text-label').textContent = TEXT_MODEL_LABELS[textModel] || textModel;
+  $('#route-image-label').textContent = IMAGE_MODEL_LABELS[imageModel] || imageModel;
+  $('#gen-image-model-label').textContent = IMAGE_MODEL_LABELS[imageModel] || imageModel;
+  applyImageSizeOptions(imageModel);
+}
+
+$('#save-ai-settings').addEventListener('click', async () => {
+  const textModel = $('#text-model-pref').value;
+  const imageModel = $('#image-model-pref').value;
+  const button = $('#save-ai-settings');
+  button.disabled = true;
+  try {
+    const { user } = await api('/api/me/ai-settings', {
+      method: 'PUT',
+      body: { textModel, imageModel },
+    });
+    state.user = user;
+    applyAiSettings();
+    renderKeyState();
+    renderBytePlusKeyState();
+    $('#ai-settings-hint').textContent = 'Model preferences saved.';
+    toast('AI model preferences saved.', 'success');
+  } catch (err) {
+    $('#ai-settings-hint').textContent = 'Could not save model preferences.';
+    toast(err.message || 'Could not save model preferences.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#text-model-pref').addEventListener('change', () => {
+  $('#ai-settings-hint').textContent = 'Unsaved text-model change. Click Save model preferences.';
+});
+$('#image-model-pref').addEventListener('change', () => {
+  $('#ai-settings-hint').textContent = 'Unsaved image-model change. Click Save model preferences.';
+});
+
+$$('.open-apis').forEach((button) => {
+  button.addEventListener('click', () => switchTab('apis'));
+});
+
+// ---------------------------------------------------------------------------
+// Library
+// ---------------------------------------------------------------------------
+let libraryReturnFocus = null;
+const LIBRARY_REVIEW_DECISIONS = new Set(['APPROVED', 'REVISE', 'REJECT', 'OWNER REVIEW']);
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Not recorded';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatLibraryDate(value) {
+  if (!value) return 'Not recorded';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Not recorded' : date.toLocaleString();
+}
+
+function libraryRecorded(value) {
+  return value === undefined || value === null || value === '' ? 'Not recorded' : String(value);
+}
+
+function libraryReviewLabel(metadata) {
+  const decision = metadata && metadata.reviewDecision;
+  return LIBRARY_REVIEW_DECISIONS.has(decision) ? decision : 'Not recorded';
+}
+
+function libraryReviewClass(decision) {
+  if (decision === 'APPROVED') return 'approved';
+  if (decision === 'REVISE') return 'revise';
+  if (decision === 'REJECT') return 'reject';
+  if (decision === 'OWNER REVIEW') return 'owner';
+  return '';
+}
+
+function libraryFilteredImages() {
+  const filters = state.library.filters;
+  const query = state.library.search.trim().toLowerCase();
+  return state.library.images.filter((image) => {
+    const metadata = image.metadata || {};
+    if (query && !`${image.name || ''} ${image.relativePath || ''} ${image.label || ''}`.toLowerCase().includes(query)) return false;
+    if (filters.projectId && metadata.projectId !== filters.projectId) return false;
+    if (filters.episodeId && metadata.episodeId !== filters.episodeId) return false;
+    if (filters.collectionId && !(image.collections || []).some((item) => item.id === filters.collectionId)) return false;
+    if (filters.tag && !(image.tags || []).some((item) =>
+      item.id === filters.tag || item.name.toLowerCase() === filters.tag.toLowerCase()
+    )) return false;
+    if (filters.type && image.extension !== filters.type) return false;
+    if (filters.status && image.lifecycleStatus !== filters.status) return false;
+    if (filters.duplicate && !(image.duplicateCount > 1)) return false;
+    if (filters.missing && !image.missing) return false;
+    if (filters.unassigned && metadata.projectId) return false;
+    return true;
+  });
+}
+
+function setSelectOptions(select, values, placeholder) {
+  const current = select.value;
+  select.innerHTML = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = placeholder;
+  select.appendChild(first);
+  values.forEach(({ value, label }) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  });
+  select.value = values.some((item) => item.value === current) ? current : '';
+}
+
+function renderLibraryFilters() {
+  const images = state.library.images;
+  const projects = new Map();
+  const episodes = new Map();
+  const collections = new Map(state.library.collections.map((item) => [item.id, item.name]));
+  const tags = new Map();
+  const types = new Set();
+  const statuses = new Set();
+  images.forEach((image) => {
+    const metadata = image.metadata || {};
+    if (metadata.projectId) projects.set(metadata.projectId, metadata.projectTitle || metadata.projectId);
+    if (metadata.episodeId) episodes.set(metadata.episodeId, metadata.episodeTitle || metadata.episodeId);
+    (image.collections || []).forEach((item) => collections.set(item.id, item.name));
+    (image.tags || []).forEach((item) => tags.set(item.id, item.name));
+    if (image.extension) types.add(image.extension);
+    if (image.lifecycleStatus) statuses.add(image.lifecycleStatus);
+  });
+
+  setSelectOptions($('#library-project-filter'),
+    Array.from(projects, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label)),
+    'All projects');
+  setSelectOptions($('#library-episode-filter'),
+    Array.from(episodes, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label)),
+    'All episodes');
+  setSelectOptions($('#library-collection-filter'),
+    Array.from(collections, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label)),
+    'All collections');
+  setSelectOptions($('#library-tag-filter'),
+    Array.from(tags, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label)),
+    'All tags');
+  setSelectOptions($('#library-type-filter'),
+    Array.from(types).sort().map((value) => ({ value, label: value.toUpperCase() })),
+    'All types');
+  setSelectOptions($('#library-status-filter'),
+    Array.from(statuses).sort().map((value) => ({ value, label: value })),
+    'All statuses');
+  $('#library-project-filter').value = state.library.filters.projectId;
+  $('#library-episode-filter').value = state.library.filters.episodeId;
+  $('#library-collection-filter').value = state.library.filters.collectionId;
+  $('#library-tag-filter').value = state.library.filters.tag;
+  $('#library-type-filter').value = state.library.filters.type;
+  $('#library-status-filter').value = state.library.filters.status;
+  $('#library-duplicate-filter').checked = state.library.filters.duplicate;
+  $('#library-missing-filter').checked = state.library.filters.missing;
+  $('#library-unassigned-filter').checked = state.library.filters.unassigned;
+}
+
+function renderLibrary() {
+  const loading = $('#library-loading');
+  const empty = $('#library-empty');
+  const error = $('#library-error');
+  const summary = $('#library-summary');
+  const grid = $('#library-grid');
+
+  grid.innerHTML = '';
+  if (state.library.loading) {
+    loading.classList.remove('hidden');
+    empty.classList.add('hidden');
+    error.classList.add('hidden');
+    summary.classList.add('hidden');
+    grid.classList.add('hidden');
+    return;
+  }
+  loading.classList.add('hidden');
+
+  if (state.library.error) {
+    error.classList.remove('hidden');
+    empty.classList.add('hidden');
+    summary.classList.add('hidden');
+    grid.classList.add('hidden');
+    $('#library-error-text').textContent = state.library.error;
+    return;
+  }
+  error.classList.add('hidden');
+
+  if (!state.library.images.length) {
+    empty.classList.remove('hidden');
+    summary.classList.add('hidden');
+    grid.classList.add('hidden');
+    renderLibraryFilters();
+    $('#library-empty p').innerHTML = 'No images found. Images placed in <code>data/images</code> will appear here.';
+    return;
+  }
+
+  renderLibraryFilters();
+  const images = libraryFilteredImages();
+  if (!images.length) {
+    empty.classList.remove('hidden');
+    summary.classList.add('hidden');
+    grid.classList.add('hidden');
+    $('#library-empty p').textContent = 'No images match your search.';
+    return;
+  }
+
+  empty.classList.add('hidden');
+  summary.classList.remove('hidden');
+  grid.classList.remove('hidden');
+  $('#library-count').textContent = images.length === state.library.images.length
+    ? `${images.length} image${images.length === 1 ? '' : 's'}`
+    : `${images.length} of ${state.library.images.length} images`;
+
+  images.forEach((image) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'library-card';
+    card.dataset.libraryId = image.id;
+    card.setAttribute('aria-label', `Inspect ${image.name}`);
+    card.setAttribute('aria-haspopup', 'dialog');
+
+    const thumb = document.createElement('span');
+    thumb.className = 'library-thumb';
+    const img = document.createElement('img');
+    img.src = image.url;
+    img.alt = image.name;
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    if (image.width) img.width = image.width;
+    if (image.height) img.height = image.height;
+    img.addEventListener('error', () => {
+      img.remove();
+      const fallback = document.createElement('span');
+      fallback.className = 'library-thumb-fallback';
+      fallback.textContent = 'Preview unavailable';
+      thumb.appendChild(fallback);
+    });
+    thumb.appendChild(img);
+
+    const body = document.createElement('span');
+    body.className = 'library-card-body';
+    const name = document.createElement('span');
+    name.className = 'library-card-name';
+    name.textContent = image.label || image.name;
+    const pathLabel = document.createElement('span');
+    pathLabel.className = 'library-card-path';
+    pathLabel.textContent = image.relativePath;
+    const decision = image.reviewDecision && image.reviewDecision !== 'NOT REVIEWED'
+      ? image.reviewDecision
+      : 'Not reviewed';
+    const badge = document.createElement('span');
+    badge.className = `library-badge ${libraryReviewClass(decision)}`.trim();
+    badge.textContent = image.staleReview ? `Content: ${decision} · earlier revision` : `Content: ${decision}`;
+    body.append(name, pathLabel, badge);
+    if (image.publicationReady) {
+      const publication = document.createElement('span');
+      publication.className = 'library-badge approved';
+      publication.textContent = 'Publication ready';
+      body.appendChild(publication);
+    }
+    card.append(thumb, body);
+    card.addEventListener('click', () => openLibraryDetail(image.id));
+    grid.appendChild(card);
+  });
+}
+
+async function loadLibrary(force = false) {
+  if (state.library.loading) return;
+  if (state.library.loaded && !force) {
+    renderLibrary();
+    return;
+  }
+
+  state.library.loading = true;
+  state.library.error = null;
+  renderLibrary();
+
+  try {
+    const [data, collectionsResult] = await Promise.all([
+      api('/api/library'),
+      api('/api/collections').catch(() => ({ collections: [] })),
+    ]);
+    state.library.images = Array.isArray(data.images) ? data.images : [];
+    state.library.collections = Array.isArray(collectionsResult.collections) ? collectionsResult.collections : [];
+    state.library.loaded = true;
+  } catch (err) {
+    state.library.error = err.message || 'Could not load the library.';
+    state.library.loaded = false;
+    if (state.library.images.length) toast(state.library.error, 'error');
+  } finally {
+    state.library.loading = false;
+    renderLibrary();
+  }
+}
+
+function addLibraryFact(list, label, value, options = {}) {
+  const dt = document.createElement('dt');
+  dt.textContent = label;
+  const dd = document.createElement('dd');
+  if (options.code) {
+    const code = document.createElement('code');
+    code.textContent = value;
+    dd.appendChild(code);
+  } else {
+    dd.textContent = value;
+  }
+  list.append(dt, dd);
+}
+
+function openLibraryDetail(id) {
+  const image = state.library.images.find((item) => item.id === id || item.assetId === id);
+  if (!image) return;
+
+  state.library.selectedId = id;
+  state.library.selectedAssetId = image.assetId;
+  state.library.currentAsset = { ...image, id: image.assetId };
+  libraryReturnFocus = document.activeElement;
+  const metadata = image.metadata || {};
+  const review = libraryReviewLabel(metadata);
+
+  $('#library-modal-title').textContent = image.name;
+  $('#library-detail-name').textContent = image.label || image.name;
+
+  const preview = $('#library-preview');
+  const previewError = $('#library-preview-error');
+  preview.classList.remove('hidden');
+  previewError.classList.add('hidden');
+  preview.onload = () => {
+    preview.classList.remove('hidden');
+    previewError.classList.add('hidden');
+  };
+  preview.onerror = () => {
+    preview.classList.add('hidden');
+    previewError.classList.remove('hidden');
+  };
+  preview.src = image.url;
+  preview.alt = image.name;
+
+  const fileFacts = $('#library-file-facts');
+  fileFacts.innerHTML = '';
+  addLibraryFact(fileFacts, 'Filename', libraryRecorded(image.name));
+  addLibraryFact(fileFacts, 'Relative path', libraryRecorded(image.relativePath), { code: true });
+  addLibraryFact(fileFacts, 'File type', image.extension ? image.extension.toUpperCase() : 'Not recorded');
+  addLibraryFact(
+    fileFacts,
+    'Dimensions',
+    image.width && image.height ? `${image.width} × ${image.height}` : 'Not recorded'
+  );
+  addLibraryFact(fileFacts, 'File size', formatBytes(image.sizeBytes));
+  addLibraryFact(fileFacts, 'Last modified', formatLibraryDate(image.modifiedAt));
+
+  const metadataList = $('#library-metadata-list');
+  metadataList.innerHTML = '';
+  addLibraryFact(metadataList, 'Project ID', libraryRecorded(metadata.projectId));
+  addLibraryFact(metadataList, 'Episode ID', libraryRecorded(metadata.episodeId));
+  addLibraryFact(metadataList, 'Scene ID', libraryRecorded(metadata.sceneId));
+  addLibraryFact(metadataList, 'Revision', libraryRecorded(metadata.revision));
+  addLibraryFact(metadataList, 'Workflow status', libraryRecorded(metadata.workflowStatus));
+  addLibraryFact(metadataList, 'Review decision', review);
+  addLibraryFact(metadataList, 'Prompt version', libraryRecorded(metadata.promptVersion));
+  addLibraryFact(metadataList, 'Prompt draft ID', libraryRecorded(metadata.promptDraftId));
+  addLibraryFact(metadataList, 'Model', libraryRecorded(metadata.model));
+  addLibraryFact(
+    metadataList,
+    'Reference IDs',
+    Array.isArray(metadata.referenceIds) && metadata.referenceIds.length
+      ? metadata.referenceIds.join(', ')
+      : 'Not recorded'
+  );
+  addLibraryFact(metadataList, 'Source', libraryRecorded(metadata.source));
+  addLibraryFact(metadataList, 'Project stage (context)', libraryRecorded(metadata.projectStage));
+  addLibraryFact(metadataList, 'Project status (context)', libraryRecorded(metadata.projectStatus));
+  addLibraryFact(metadataList, 'Generation approval', 'Not recorded');
+  addLibraryFact(metadataList, 'Publication approval', 'Not recorded');
+  addLibraryFact(metadataList, 'Rights / adult / content checks', 'Not recorded');
+
+  const promptBlock = $('#library-prompt-block');
+  const prompt = $('#library-prompt');
+  if (typeof metadata.prompt === 'string' && metadata.prompt.trim()) {
+    prompt.textContent = metadata.prompt;
+    promptBlock.classList.remove('hidden');
+  } else {
+    prompt.textContent = '';
+    promptBlock.classList.add('hidden');
+  }
+
+  const modal = $('#library-modal');
+  modal.classList.remove('hidden');
+  document.body.classList.add('library-modal-open');
+  $('#library-modal-close').focus();
+  document.addEventListener('keydown', libraryModalKeydown);
+  hydrateLibraryDetail(image.assetId);
+}
+
+async function hydrateLibraryDetail(assetId) {
+  try {
+    const { asset } = await api(`/api/assets/${encodeURIComponent(assetId)}`);
+    if (state.library.selectedAssetId !== assetId) return;
+    state.library.currentAsset = asset;
+    renderLibraryAssetDetail(asset);
+    loadAssetReview(assetId);
+  } catch (err) {
+    if (state.library.selectedAssetId !== assetId) return;
+    toast(err.message || 'Could not load asset details.', 'error');
+  }
+}
+
+function renderLibraryAssetDetail(asset) {
+  const metadata = asset.metadata || {};
+  const review = libraryReviewLabel(metadata);
+
+  $('#library-modal-title').textContent = asset.name || 'Image details';
+  $('#library-detail-name').textContent = asset.label || asset.name || 'Image';
+  const preview = $('#library-preview');
+  if (asset.url && preview.getAttribute('src') !== asset.url) {
+    preview.classList.remove('hidden');
+    $('#library-preview-error').classList.add('hidden');
+    preview.src = asset.url;
+    preview.alt = asset.name || 'Asset preview';
+  }
+
+  const fileFacts = $('#library-file-facts');
+  fileFacts.innerHTML = '';
+  addLibraryFact(fileFacts, 'Filename', libraryRecorded(asset.name));
+  addLibraryFact(fileFacts, 'Relative path', libraryRecorded(asset.relativePath), { code: true });
+  addLibraryFact(fileFacts, 'Asset ID', libraryRecorded(asset.id), { code: true });
+  addLibraryFact(fileFacts, 'Current version', `${asset.revision || '—'} · ${asset.isSource ? 'source' : 'derived'}`);
+  addLibraryFact(fileFacts, 'Lifecycle', libraryRecorded(asset.lifecycleStatus));
+  addLibraryFact(fileFacts, 'File type', asset.extension ? asset.extension.toUpperCase() : 'Not recorded');
+  addLibraryFact(fileFacts, 'Dimensions', asset.width && asset.height ? `${asset.width} × ${asset.height}` : 'Not recorded');
+  addLibraryFact(fileFacts, 'File size', formatBytes(asset.sizeBytes));
+  addLibraryFact(fileFacts, 'Last modified', formatLibraryDate(asset.modifiedAt));
+  addLibraryFact(fileFacts, 'Checksum', asset.sha256 ? `${asset.sha256.slice(0, 16)}…` : 'Not recorded');
+
+  const metadataList = $('#library-metadata-list');
+  metadataList.innerHTML = '';
+  addLibraryFact(metadataList, 'Project ID', libraryRecorded(metadata.projectId));
+  addLibraryFact(metadataList, 'Episode ID', libraryRecorded(metadata.episodeId));
+  addLibraryFact(metadataList, 'Scene ID', libraryRecorded(metadata.sceneId));
+  addLibraryFact(metadataList, 'Scene title', libraryRecorded(metadata.sceneTitle));
+  addLibraryFact(metadataList, 'Revision', libraryRecorded(asset.revision));
+  addLibraryFact(metadataList, 'Workflow status', libraryRecorded(metadata.workflowStatus));
+  addLibraryFact(metadataList, 'Review decision', review);
+  addLibraryFact(metadataList, 'Prompt version', libraryRecorded(metadata.promptVersion));
+  addLibraryFact(metadataList, 'Prompt draft ID', libraryRecorded(metadata.promptDraftId));
+  addLibraryFact(metadataList, 'Model', libraryRecorded(metadata.model));
+  addLibraryFact(metadataList, 'Reference IDs',
+    Array.isArray(metadata.referenceIds) && metadata.referenceIds.length
+      ? metadata.referenceIds.join(', ')
+      : 'Not recorded');
+  addLibraryFact(metadataList, 'Source', libraryRecorded(metadata.source));
+  addLibraryFact(metadataList, 'Project stage (context)', libraryRecorded(metadata.projectStage));
+  addLibraryFact(metadataList, 'Project status (context)', libraryRecorded(metadata.projectStatus));
+  addLibraryFact(metadataList, 'Generation approval', 'Not recorded');
+  addLibraryFact(metadataList, 'Publication approval', 'Not recorded');
+  addLibraryFact(metadataList, 'Rights / adult / content checks', 'Not recorded');
+
+  const promptBlock = $('#library-prompt-block');
+  const prompt = $('#library-prompt');
+  if (typeof metadata.prompt === 'string' && metadata.prompt.trim()) {
+    prompt.textContent = metadata.prompt;
+    promptBlock.classList.remove('hidden');
+  } else {
+    prompt.textContent = '';
+    promptBlock.classList.add('hidden');
+  }
+
+  $('#library-asset-tags').textContent = (asset.tags || []).map((tag) => tag.name).join(', ') || 'Not recorded';
+  $('#library-asset-collections').textContent = (asset.collections || []).map((item) => item.name).join(', ') || 'Not recorded';
+
+  const collectionSelect = $('#library-collection-select');
+  collectionSelect.innerHTML = '';
+  state.library.collections.forEach((collection) => {
+    const option = document.createElement('option');
+    option.value = collection.id;
+    option.textContent = collection.name;
+    collectionSelect.appendChild(option);
+  });
+  if (!state.library.collections.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No collections yet';
+    collectionSelect.appendChild(option);
+  }
+
+  const versions = $('#library-versions');
+  versions.innerHTML = '';
+  (asset.versions || []).forEach((version) => {
+    const row = document.createElement('div');
+    row.className = 'library-version';
+    const label = document.createElement('span');
+    label.textContent = `Revision ${version.revision}${version.isSource ? ' · source' : ' · derived'}`;
+    const meta = document.createElement('span');
+    meta.className = 'library-version-meta';
+    meta.textContent = `${version.width && version.height ? `${version.width}×${version.height}` : 'No dimensions'} · ${formatBytes(version.bytes)} · ${formatLibraryDate(version.createdAt)}`;
+    const pathCode = document.createElement('code');
+    pathCode.textContent = version.relativePath;
+    row.append(label, meta, pathCode);
+    versions.appendChild(row);
+  });
+  if (!(asset.versions || []).length) versions.textContent = 'Not recorded';
+
+  const duplicateBox = $('#library-duplicates');
+  duplicateBox.innerHTML = '';
+  if (asset.duplicatePeers && asset.duplicatePeers.length) {
+    asset.duplicatePeers.forEach((peer) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-ghost btn-sm library-duplicate-link';
+      button.textContent = peer.relativePath;
+      button.addEventListener('click', () => openLibraryDetail(peer.id));
+      duplicateBox.appendChild(button);
+    });
+  } else {
+    duplicateBox.textContent = 'Not recorded';
+  }
+
+  loadLibraryEpisodesForAsset(asset);
+}
+
+async function loadLibraryEpisodesForAsset(asset) {
+  const select = $('#library-episode-select');
+  select.innerHTML = '';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = 'No episode';
+  select.appendChild(blank);
+  if (!asset.metadata || !asset.metadata.projectId) return;
+  const requestedAssetId = asset.id;
+  try {
+    const { episodes } = await api(`/api/projects/${encodeURIComponent(asset.metadata.projectId)}/episodes`);
+    if (state.library.selectedAssetId !== requestedAssetId) return;
+    (episodes || []).forEach((episode) => {
+      const option = document.createElement('option');
+      option.value = episode.id;
+      option.textContent = episode.title;
+      option.selected = episode.id === asset.metadata.episodeId;
+      select.appendChild(option);
+    });
+  } catch (_) { /* episode assignment remains unavailable */ }
+}
+
+function closeLibraryDetail() {
+  const modal = $('#library-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  document.body.classList.remove('library-modal-open');
+  document.removeEventListener('keydown', libraryModalKeydown);
+  state.library.selectedId = null;
+  state.library.selectedAssetId = null;
+  state.library.currentAsset = null;
+  state.library.reviewData = null;
+  if (libraryReturnFocus && document.contains(libraryReturnFocus)) {
+    libraryReturnFocus.focus();
+  }
+  libraryReturnFocus = null;
+}
+
+function resetLibrary() {
+  closeLibraryDetail();
+  state.library.loaded = false;
+  state.library.loading = false;
+  state.library.images = [];
+  state.library.collections = [];
+  state.library.error = null;
+  state.library.search = '';
+  state.library.selectedId = null;
+  state.library.selectedAssetId = null;
+  state.library.currentAsset = null;
+  state.library.reviewData = null;
+  state.library.filters = {
+    projectId: '', episodeId: '', collectionId: '', tag: '', type: '',
+    status: '', duplicate: false, missing: false, unassigned: false,
+  };
+  const search = $('#library-search');
+  if (search) search.value = '';
+  renderLibrary();
+}
+
+function libraryModalKeydown(event) {
+  const modal = $('#library-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeLibraryDetail();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+
+  const focusable = Array.from(
+    modal.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')
+  );
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.focus();
+    return;
+  }
+  if (!modal.contains(document.activeElement)) {
+    event.preventDefault();
+    focusable[0].focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+$('#library-search').addEventListener('input', (event) => {
+  state.library.search = event.target.value;
+  renderLibrary();
+});
+
+const libraryFilterBindings = [
+  ['#library-project-filter', 'projectId'],
+  ['#library-episode-filter', 'episodeId'],
+  ['#library-collection-filter', 'collectionId'],
+  ['#library-tag-filter', 'tag'],
+  ['#library-type-filter', 'type'],
+  ['#library-status-filter', 'status'],
+];
+libraryFilterBindings.forEach(([selector, key]) => {
+  $(selector).addEventListener('change', (event) => {
+    state.library.filters[key] = event.target.value;
+    renderLibrary();
+  });
+});
+[
+  ['#library-duplicate-filter', 'duplicate'],
+  ['#library-missing-filter', 'missing'],
+  ['#library-unassigned-filter', 'unassigned'],
+].forEach(([selector, key]) => {
+  $(selector).addEventListener('change', (event) => {
+    state.library.filters[key] = event.target.checked;
+    renderLibrary();
+  });
+});
+$('#library-clear-filters').addEventListener('click', () => {
+  state.library.filters = {
+    projectId: '', episodeId: '', collectionId: '', tag: '', type: '',
+    status: '', duplicate: false, missing: false, unassigned: false,
+  };
+  state.library.search = '';
+  $('#library-search').value = '';
+  renderLibrary();
+});
+
+async function refreshLibraryAsset() {
+  const assetId = state.library.currentAsset && state.library.currentAsset.id;
+  await loadLibrary(true);
+  if (assetId) await hydrateLibraryDetail(assetId);
+}
+
+$('#library-add-tag').addEventListener('click', async () => {
+  const assetId = state.library.currentAsset && state.library.currentAsset.id;
+  const name = $('#library-tag-input').value.trim();
+  if (!assetId) return;
+  if (!name) return toast('Enter a tag name.', 'error');
+  try {
+    await api(`/api/assets/${encodeURIComponent(assetId)}/tags`, { method: 'POST', body: { name } });
+    $('#library-tag-input').value = '';
+    await refreshLibraryAsset();
+    toast('Tag added.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not add the tag.', 'error');
+  }
+});
+
+$('#library-add-collection').addEventListener('click', async () => {
+  const assetId = state.library.currentAsset && state.library.currentAsset.id;
+  const collectionId = $('#library-collection-select').value;
+  if (!assetId || !collectionId) return toast('Choose a collection first.', 'error');
+  try {
+    await api(`/api/collections/${encodeURIComponent(collectionId)}/assets/${encodeURIComponent(assetId)}`, { method: 'POST' });
+    await refreshLibraryAsset();
+    toast('Added to collection.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not add to the collection.', 'error');
+  }
+});
+
+$('#library-create-collection').addEventListener('click', async () => {
+  const name = $('#library-new-collection').value.trim();
+  if (!name) return toast('Enter a collection name.', 'error');
+  try {
+    await api('/api/collections', { method: 'POST', body: { name } });
+    $('#library-new-collection').value = '';
+    await refreshLibraryAsset();
+    toast('Collection created.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not create the collection.', 'error');
+  }
+});
+
+$('#library-set-episode').addEventListener('click', async () => {
+  const assetId = state.library.currentAsset && state.library.currentAsset.id;
+  if (!assetId) return;
+  const episodeId = $('#library-episode-select').value || null;
+  try {
+    await api(`/api/assets/${encodeURIComponent(assetId)}`, { method: 'PUT', body: { episodeId } });
+    await refreshLibraryAsset();
+    toast('Episode assignment updated.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not update the episode.', 'error');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review and quality control
+// ---------------------------------------------------------------------------
+function reviewStatusClass(status) {
+  if (status === 'APPROVED' || status === 'PUBLICATION READY') return 'approved';
+  if (status === 'REJECT') return 'unapproved';
+  if (status === 'REVISE' || status === 'OWNER REVIEW') return 'draft';
+  return 'draft';
+}
+
+async function loadAssetReview(assetId) {
+  try {
+    $('#review-hint').textContent = 'Loading review history…';
+    const { review } = await api(`/api/assets/${encodeURIComponent(assetId)}/review`);
+    if (state.library.selectedAssetId !== assetId) return;
+    state.library.reviewData = review;
+    renderAssetReview(review);
+  } catch (err) {
+    if (state.library.selectedAssetId !== assetId) return;
+    $('#review-hint').textContent = 'Could not load review data.';
+    toast(err.message || 'Could not load review data.', 'error');
+  }
+}
+
+function renderAssetReview(review) {
+  const latest = review.review || null;
+  const status = review.status || 'NOT REVIEWED';
+  const statusStale = Boolean(latest && review.currentVersionId && latest.assetVersionId && latest.assetVersionId !== review.currentVersionId);
+  $('#review-hint').textContent = 'Content review, checklists, and publication are separate decisions.';
+  const badge = $('#review-status');
+  badge.textContent = status === 'NOT REVIEWED'
+    ? 'Not reviewed'
+    : statusStale
+      ? `${status} · earlier revision`
+      : status;
+  badge.className = `story-badge ${reviewStatusClass(status)}`;
+  $('#review-decision').value = latest ? latest.decision : '';
+  $('#review-notes').value = latest ? latest.notes : '';
+  $('#review-blockers').value = latest ? latest.blockers.join('\n') : '';
+
+  const checklist = $('#review-checklist');
+  checklist.innerHTML = '';
+  const states = ['unreviewed', 'pass', 'fail', 'not-applicable'];
+  (review.categories || []).forEach((category) => {
+    const item = (review.checklist || []).find((entry) => entry.category === category.id) || {
+      state: 'unreviewed',
+      notes: '',
+    };
+    const row = document.createElement('div');
+    row.className = 'review-checklist-item';
+    row.dataset.reviewCategory = category.id;
+    const label = document.createElement('strong');
+    label.textContent = category.label;
+    const select = document.createElement('select');
+    select.dataset.reviewState = '1';
+    states.forEach((state) => {
+      const option = document.createElement('option');
+      option.value = state;
+      option.textContent = state === 'not-applicable' ? 'not applicable' : state;
+      select.appendChild(option);
+    });
+    select.value = item.state;
+    const notes = document.createElement('input');
+    notes.type = 'text';
+    notes.maxLength = 2000;
+    notes.placeholder = 'Checklist notes';
+    notes.dataset.reviewNotes = '1';
+    notes.value = item.notes || '';
+    row.append(label, select, notes);
+    checklist.appendChild(row);
+  });
+
+  const coverSelect = $('#review-cover-select');
+  coverSelect.innerHTML = '';
+  const versions = (state.library.currentAsset && state.library.currentAsset.versions) || [];
+  const noCover = document.createElement('option');
+  noCover.value = '';
+  noCover.textContent = 'No safe cover';
+  coverSelect.appendChild(noCover);
+  versions.forEach((version) => {
+    const option = document.createElement('option');
+    option.value = version.id;
+    option.textContent = `Revision ${version.revision}${version.isSource ? ' · source' : ' · derived'}`;
+    coverSelect.appendChild(option);
+  });
+  coverSelect.value = review.safeCover ? review.safeCover.versionId : '';
+  $('#review-cover-status').textContent = review.safeCover
+    ? `Safe cover: revision ${(versions.find((version) => version.id === review.safeCover.versionId) || {}).revision || '?'}`
+    : 'No safe cover designated. Publication approval is blocked.';
+
+  const publication = review.publication;
+  const publicationNote = review.publicationReady
+    ? 'Publication-ready: content review, completed checklist, safe cover, and publication approval are all recorded.'
+    : review.blockers && review.blockers.length
+      ? `Not publication-ready: ${review.blockers.join(' · ')}`
+      : 'Not publication-ready: review evidence is incomplete.';
+  $('#review-publication-status').textContent = publicationNote;
+  $('#review-publication-notes').value = publication ? publication.notes : '';
+
+  const continuity = $('#review-continuity');
+  continuity.innerHTML = '';
+  (review.continuity || []).forEach((check) => {
+    const row = document.createElement('div');
+    row.className = 'review-continuity-item';
+    const badge = document.createElement('span');
+    badge.className = `story-badge ${check.state === 'pass' ? 'approved' : 'unapproved'}`;
+    badge.textContent = check.state === 'pass' ? 'pass' : 'warn';
+    const text = document.createElement('span');
+    text.textContent = `${check.label}: ${check.message}`;
+    row.append(badge, text);
+    continuity.appendChild(row);
+  });
+  if (!review.continuity || !review.continuity.length) continuity.textContent = 'Not recorded';
+
+  const compareA = $('#review-compare-a');
+  const compareB = $('#review-compare-b');
+  [compareA, compareB].forEach((select) => {
+    select.innerHTML = '';
+    versions.forEach((version) => {
+      const option = document.createElement('option');
+      option.value = version.id;
+      option.textContent = `Revision ${version.revision}`;
+      select.appendChild(option);
+    });
+  });
+  if (versions.length > 1) {
+    compareA.value = versions[versions.length - 2].id;
+    compareB.value = versions[versions.length - 1].id;
+  }
+  renderReviewCompare();
+
+  const audit = $('#review-audit');
+  audit.innerHTML = '';
+  if (!(review.audit || []).length) {
+    audit.textContent = 'No review events recorded yet.';
+  } else {
+    review.audit.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'review-audit-item';
+      const when = formatLibraryDate(entry.createdAt);
+      row.textContent = `${when} · ${entry.actor} · ${entry.action}${entry.decision ? ' · ' + entry.decision : ''}${entry.blockers && entry.blockers.length ? ' · blockers: ' + entry.blockers.join('; ') : ''}`;
+      audit.appendChild(row);
+    });
+  }
+}
+
+function renderReviewCompare() {
+  const container = $('#review-compare');
+  const versions = (state.library.currentAsset && state.library.currentAsset.versions) || [];
+  const first = versions.find((version) => version.id === $('#review-compare-a').value);
+  const second = versions.find((version) => version.id === $('#review-compare-b').value);
+  container.innerHTML = '';
+  [first, second].forEach((version) => {
+    const figure = document.createElement('figure');
+    if (version) {
+      const img = document.createElement('img');
+      img.src = version.url;
+      img.alt = `Revision ${version.revision} preview`;
+      const caption = document.createElement('figcaption');
+      caption.textContent = `Revision ${version.revision} · ${version.width && version.height ? `${version.width}×${version.height}` : 'dimensions not recorded'} · ${formatBytes(version.bytes)}`;
+      figure.append(img, caption);
+    } else {
+      const caption = document.createElement('figcaption');
+      caption.textContent = versions.length ? 'Choose two revisions.' : 'No multiple revisions to compare.';
+      figure.appendChild(caption);
+    }
+    container.appendChild(figure);
+  });
+}
+
+$('#review-save').addEventListener('click', async () => {
+  const assetId = state.library.selectedAssetId;
+  const decision = $('#review-decision').value;
+  if (!assetId || !decision) return toast('Choose a review decision first.', 'error');
+  try {
+    await api(`/api/assets/${encodeURIComponent(assetId)}/reviews`, {
+      method: 'POST',
+      body: {
+        decision,
+        notes: $('#review-notes').value,
+        blockers: $('#review-blockers').value.split('\n').map((value) => value.trim()).filter(Boolean),
+        comparedRevisions: [$('#review-compare-a').value, $('#review-compare-b').value].filter(Boolean),
+      },
+    });
+    await loadAssetReview(assetId);
+    await loadLibrary(true);
+    toast('Review decision recorded.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not record the review decision.', 'error');
+  }
+});
+
+$('#review-save-checklist').addEventListener('click', async () => {
+  const assetId = state.library.selectedAssetId;
+  if (!assetId) return;
+  const items = Array.from($('#review-checklist').querySelectorAll('[data-review-category]')).map((row) => ({
+    category: row.dataset.reviewCategory,
+    state: row.querySelector('[data-review-state]').value,
+    notes: row.querySelector('[data-review-notes]').value,
+  }));
+  try {
+    await api(`/api/assets/${encodeURIComponent(assetId)}/checklist`, { method: 'PUT', body: { items } });
+    await loadAssetReview(assetId);
+    await loadLibrary(true);
+    toast('Checklist saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the checklist.', 'error');
+  }
+});
+
+$('#review-set-cover').addEventListener('click', async () => {
+  const assetId = state.library.selectedAssetId;
+  if (!assetId) return;
+  try {
+    await api(`/api/assets/${encodeURIComponent(assetId)}/safe-cover`, {
+      method: 'POST',
+      body: { versionId: $('#review-cover-select').value || null },
+    });
+    await loadAssetReview(assetId);
+    await loadLibrary(true);
+    toast('Safe cover updated.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not update the safe cover.', 'error');
+  }
+});
+
+async function recordPublicationDecision(approved) {
+  const assetId = state.library.selectedAssetId;
+  if (!assetId) return;
+  try {
+    await api(`/api/assets/${encodeURIComponent(assetId)}/publication`, {
+      method: 'POST',
+      body: { approved, notes: $('#review-publication-notes').value },
+    });
+    await loadAssetReview(assetId);
+    await loadLibrary(true);
+    toast(approved ? 'Publication approval recorded.' : 'Publication decision recorded.', 'success');
+  } catch (err) {
+    await loadAssetReview(assetId);
+    toast(err.message || 'Could not record the publication decision.', 'error');
+  }
+}
+
+$('#review-publication-approve').addEventListener('click', () => recordPublicationDecision(true));
+$('#review-publication-decline').addEventListener('click', () => recordPublicationDecision(false));
+$('#review-compare-btn').addEventListener('click', renderReviewCompare);
+['#review-notes', '#review-blockers', '#review-publication-notes'].forEach((selector) => {
+  $(selector).addEventListener('input', () => {
+    $('#review-hint').textContent = 'Unsaved review changes. Record the decision or checklist to keep them.';
+  });
+});
+$('#review-checklist').addEventListener('change', () => {
+  $('#review-hint').textContent = 'Unsaved checklist changes. Save the checklist to keep them.';
+});
+
+// ---------------------------------------------------------------------------
+// Episodes manager
+// ---------------------------------------------------------------------------
+function closeEpisodesModal() {
+  $('#episodes-modal').classList.add('hidden');
+  state.episodesProjectId = null;
+}
+
+async function loadEpisodes() {
+  const projectId = state.episodesProjectId;
+  if (!projectId) return;
+  const list = $('#episodes-list');
+  list.innerHTML = '';
+  try {
+    const { episodes } = await api(`/api/projects/${encodeURIComponent(projectId)}/episodes`);
+    if (!episodes.length) {
+      list.textContent = 'No episodes yet.';
+      return;
+    }
+    episodes.forEach((episode) => {
+      const row = document.createElement('div');
+      row.className = 'episode-row';
+      const label = document.createElement('span');
+      label.textContent = `${episode.position}. ${episode.title}`;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'btn btn-danger btn-sm';
+      remove.textContent = 'Delete';
+      remove.addEventListener('click', async () => {
+        if (!confirm(`Delete episode "${episode.title}"?`)) return;
+        try {
+          await api(`/api/episodes/${encodeURIComponent(episode.id)}`, { method: 'DELETE' });
+          await loadEpisodes();
+          toast('Episode deleted.', 'success');
+        } catch (err) {
+          toast(err.message || 'Could not delete the episode.', 'error');
+        }
+      });
+      row.append(label, remove);
+      list.appendChild(row);
+    });
+  } catch (err) {
+    list.textContent = err.message || 'Could not load episodes.';
+  }
+}
+
+function openEpisodesModal(project) {
+  state.episodesProjectId = project.id;
+  $('#episodes-modal-title').textContent = 'Episodes';
+  $('#episodes-project-label').textContent = project.title;
+  $('#episode-title-input').value = '';
+  $('#episodes-modal').classList.remove('hidden');
+  $('#episode-title-input').focus();
+  loadEpisodes();
+}
+
+$('#episodes-modal-close').addEventListener('click', closeEpisodesModal);
+$('#episodes-modal').addEventListener('click', (event) => {
+  if (event.target === $('#episodes-modal')) closeEpisodesModal();
+});
+$('#episode-add-btn').addEventListener('click', async () => {
+  const title = $('#episode-title-input').value.trim();
+  if (!title) return toast('Enter an episode title.', 'error');
+  try {
+    await api(`/api/projects/${encodeURIComponent(state.episodesProjectId)}/episodes`, {
+      method: 'POST',
+      body: { title },
+    });
+    $('#episode-title-input').value = '';
+    await loadEpisodes();
+    toast('Episode added.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not add the episode.', 'error');
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('#episodes-modal').classList.contains('hidden')) {
+    closeEpisodesModal();
+  }
+});
+$('#library-refresh').addEventListener('click', () => loadLibrary(true));
+$('#library-retry').addEventListener('click', () => loadLibrary(true));
+$('#library-modal-close').addEventListener('click', closeLibraryDetail);
+$('#library-modal').addEventListener('click', (event) => {
+  if (event.target === $('#library-modal')) closeLibraryDetail();
+});
+
+// ---------------------------------------------------------------------------
+// Story workspace
+// ---------------------------------------------------------------------------
+const STORY_REFERENCE_CONFIG = {
+  character: {
+    collection: 'characters',
+    noun: 'Character',
+    fields: [
+      { key: 'name', label: 'Name', max: 120, required: true },
+      { key: 'gender', label: 'Gender', max: 40 },
+      { key: 'age', label: 'Age', max: 80 },
+      { key: 'appearance', label: 'Appearance', max: 5000, multiline: true },
+      { key: 'wardrobe', label: 'Wardrobe', max: 5000, multiline: true },
+      { key: 'continuityNotes', label: 'Continuity notes', max: 5000, multiline: true },
+    ],
+  },
+  location: {
+    collection: 'locations',
+    noun: 'Location',
+    fields: [
+      { key: 'name', label: 'Name', max: 200, required: true },
+      { key: 'description', label: 'Description', max: 5000, multiline: true },
+      { key: 'lighting', label: 'Lighting', max: 2000, multiline: true },
+      { key: 'continuityNotes', label: 'Continuity notes', max: 5000, multiline: true },
+    ],
+  },
+  style: {
+    collection: 'styles',
+    noun: 'Style',
+    fields: [
+      { key: 'name', label: 'Name', max: 200, required: true },
+      { key: 'description', label: 'Description', max: 5000, multiline: true },
+      { key: 'guidance', label: 'Visual guidance', max: 5000, multiline: true },
+      { key: 'exclusions', label: 'Exclusions (one per line)', max: 9000, multiline: true },
+    ],
+  },
+};
+
+function storySetHint(message) {
+  const hint = $('#story-brief-hint');
+  if (hint) hint.textContent = message || 'The brief is the canonical root of the story.';
+}
+
+function storyMarkDirty() {
+  state.story.dirty = true;
+  storySetHint('Unsaved changes. Save the section you are editing.');
+}
+
+function storyClearDirty() {
+  state.story.dirty = false;
+  storySetHint('The brief is the canonical root of the story.');
+}
+
+function storyProjectOptions() {
+  const select = $('#story-project');
+  const previous = state.story.projectId;
+  select.innerHTML = '';
+  if (!state.projects.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No projects yet';
+    select.appendChild(option);
+    return;
+  }
+  state.projects.forEach((project) => {
+    const option = document.createElement('option');
+    option.value = project.id;
+    option.textContent = project.status === 'Done' ? `${project.title} (completed)` : project.title;
+    select.appendChild(option);
+  });
+  const valid = state.projects.some((project) => project.id === previous);
+  select.value = valid ? previous : state.projects[0].id;
+  state.story.projectId = select.value;
+}
+
+function renderStoryState() {
+  $('#story-loading').classList.toggle('hidden', !state.story.loading);
+  $('#story-empty').classList.toggle('hidden', state.story.loading || Boolean(state.story.data) || Boolean(state.story.error) || Boolean(state.story.projectId));
+  $('#story-error').classList.toggle('hidden', !state.story.error);
+  $('#story-content').classList.toggle('hidden', !state.story.data);
+  if (state.story.error) $('#story-error-text').textContent = state.story.error;
+}
+
+function renderStoryProjects() {
+  storyProjectOptions();
+  if (!state.story.projectId) {
+    state.story.data = null;
+    renderStoryState();
+    return;
+  }
+  loadStory(state.story.projectId);
+}
+
+async function loadStory(projectId) {
+  if (!projectId) return;
+  state.story.loading = true;
+  state.story.error = null;
+  renderStoryState();
+  try {
+    const { story } = await api(`/api/story/${encodeURIComponent(projectId)}`);
+    if (state.story.projectId !== projectId) return;
+    state.story.data = story;
+    state.story.loaded = true;
+    state.story.dirty = false;
+    renderStory();
+  } catch (err) {
+    if (state.story.projectId !== projectId) return;
+    state.story.data = null;
+    state.story.error = err.message || 'Could not load the story workspace.';
+  } finally {
+    state.story.loading = false;
+    renderStoryState();
+  }
+}
+
+function setStoryInput(selector, value) {
+  const input = $(selector);
+  if (input) input.value = value || '';
+}
+
+function renderStory() {
+  const story = state.story.data;
+  if (!story) return;
+  renderStoryState();
+  const brief = story.brief || {};
+  setStoryInput('#story-brief-title', brief.title);
+  setStoryInput('#story-brief-logline', brief.logline);
+  setStoryInput('#story-brief-premise', brief.premise);
+  setStoryInput('#story-brief-tone', brief.tone);
+  setStoryInput('#story-brief-genre', brief.genre);
+  setStoryInput('#story-brief-audience', brief.audience);
+  setStoryInput('#story-brief-setting', brief.setting);
+  storyClearDirty();
+  renderStoryReferences('character');
+  renderStoryReferences('location');
+  renderStoryReferences('style');
+  renderStoryScenes();
+  renderStorySheetOptions();
+  renderStorySheets();
+  renderStoryWarnings();
+  const generateWorkspace = $('#story-generate-workspace');
+  if (generateWorkspace) {
+    generateWorkspace.classList.toggle('hidden', !story.hasReference);
+  }
+}
+
+function storyApprovedBadge(approved) {
+  const badge = document.createElement('span');
+  badge.className = `story-badge ${approved ? 'approved' : 'unapproved'}`;
+  badge.textContent = approved ? 'Approved' : 'Not approved';
+  return badge;
+}
+
+function storyFormField(config) {
+  const wrapper = document.createElement('label');
+  wrapper.className = 'field';
+  const label = document.createElement('span');
+  label.className = 'field-label';
+  label.textContent = config.label;
+  const input = config.multiline ? document.createElement('textarea') : document.createElement('input');
+  if (config.multiline) input.rows = 3;
+  else input.type = config.type || 'text';
+  input.maxLength = config.max;
+  input.dataset.storyField = config.key;
+  wrapper.append(label, input);
+  return { wrapper, input };
+}
+
+function renderStoryReferences(type) {
+  const config = STORY_REFERENCE_CONFIG[type];
+  const story = state.story.data;
+  if (!story) return;
+  const container = $(`#story-${config.collection}`);
+  container.innerHTML = '';
+  const items = story[config.collection] || [];
+
+  items.forEach((item) => {
+    const card = document.createElement('div');
+    card.className = 'story-ref-item';
+    card.dataset.referenceId = item.id;
+
+    const head = document.createElement('div');
+    head.className = 'story-ref-head';
+    const name = document.createElement('strong');
+    name.textContent = item.name;
+    const badges = document.createElement('div');
+    badges.className = 'story-ref-badges';
+    badges.append(storyApprovedBadge(item.approved));
+    const approve = document.createElement('button');
+    approve.type = 'button';
+    approve.className = 'btn btn-sm ' + (item.approved ? 'btn-secondary' : 'btn-primary');
+    approve.textContent = item.approved ? '↩ Unapprove' : '✓ Approve';
+    approve.title = item.approved
+      ? `Unapprove this ${config.noun.toLowerCase()} reference`
+      : `Approve this ${config.noun.toLowerCase()} reference as canonical`;
+    approve.addEventListener('click', async () => {
+      approve.disabled = true;
+      try {
+        await api(`/api/story/${type}s/${encodeURIComponent(item.id)}`, {
+          method: 'PUT',
+          body: { approved: !item.approved },
+        });
+        await loadStory(state.story.projectId);
+        refreshSidebarStory(true);
+        toast(item.approved ? `${config.noun} unapproved.` : `${config.noun} approved.`, 'success');
+      } catch (err) {
+        approve.disabled = false;
+        toast(err.message || `Could not update the ${config.noun.toLowerCase()}.`, 'error');
+      }
+    });
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'btn btn-ghost btn-sm';
+    edit.textContent = 'Edit';
+    edit.addEventListener('click', () => {
+      state.story.editor = { type, id: item.id };
+      renderStoryReferences(type);
+    });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-danger btn-sm';
+    remove.textContent = 'Delete';
+    remove.addEventListener('click', async () => {
+      if (!confirm(`Delete ${config.noun.toLowerCase()} "${item.name}"?`)) return;
+      try {
+        await api(`/api/story/${type}s/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+        await loadStory(state.story.projectId);
+        toast(`${config.noun} deleted.`, 'success');
+      } catch (err) {
+        toast(err.message || `Could not delete the ${config.noun.toLowerCase()}.`, 'error');
+      }
+    });
+    badges.append(approve, edit, remove);
+    head.append(name, badges);
+    card.appendChild(head);
+
+    if (item.legacyMaterial) {
+      const legacy = document.createElement('p');
+      legacy.className = 'story-legacy';
+      legacy.textContent = `Legacy reference material: ${item.legacyMaterial}`;
+      card.appendChild(legacy);
+    }
+
+    const meta = document.createElement('p');
+    meta.className = 'story-ref-meta';
+    if (type === 'character') {
+      meta.textContent = [item.gender, item.age, item.wardrobe].filter(Boolean).join(' · ') || 'No structured details yet.';
+    } else if (type === 'location') {
+      meta.textContent = [item.description, item.lighting].filter(Boolean).join(' · ') || 'No location description yet.';
+    } else {
+      meta.textContent = [item.description, item.guidance].filter(Boolean).join(' · ') || 'No style guidance yet.';
+    }
+    card.appendChild(meta);
+    container.appendChild(card);
+  });
+
+  if (!items.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = `No ${config.noun.toLowerCase()} records yet.`;
+    container.appendChild(empty);
+  }
+
+  if (state.story.editor && state.story.editor.type === type) {
+    const editing = state.story.editor.id ? items.find((item) => item.id === state.story.editor.id) : null;
+    const form = document.createElement('div');
+    form.className = 'story-ref-form';
+    const heading = document.createElement('h3');
+    heading.textContent = editing ? `Edit ${config.noun.toLowerCase()}` : `New ${config.noun.toLowerCase()}`;
+    form.appendChild(heading);
+    const grid = document.createElement('div');
+    grid.className = 'story-form-grid';
+    const fields = {};
+    config.fields.forEach((fieldConfig) => {
+      const field = storyFormField(fieldConfig);
+      field.input.value = editing
+        ? (Array.isArray(editing[fieldConfig.key]) ? editing[fieldConfig.key].join('\n') : editing[fieldConfig.key] || '')
+        : '';
+      fields[fieldConfig.key] = field.input;
+      grid.appendChild(field.wrapper);
+    });
+    form.appendChild(grid);
+
+    const approvedWrap = document.createElement('label');
+    approvedWrap.className = 'story-check';
+    const approved = document.createElement('input');
+    approved.type = 'checkbox';
+    approved.checked = editing ? Boolean(editing.approved) : false;
+    approvedWrap.append(approved, document.createTextNode(' Approved canonical reference'));
+    form.appendChild(approvedWrap);
+
+    const actions = document.createElement('div');
+    actions.className = 'story-form-actions';
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-primary btn-sm';
+    save.textContent = editing ? 'Save changes' : `Create ${config.noun.toLowerCase()}`;
+    save.addEventListener('click', async () => {
+      const body = { approved: approved.checked };
+      for (const [key, input] of Object.entries(fields)) {
+        body[key] = key === 'exclusions'
+          ? input.value.split('\n').map((value) => value.trim()).filter(Boolean)
+          : input.value;
+      }
+      try {
+        const endpoint = editing
+          ? `/api/story/${type}s/${encodeURIComponent(editing.id)}`
+          : `/api/story/${encodeURIComponent(state.story.projectId)}/${type}s`;
+        await api(endpoint, { method: editing ? 'PUT' : 'POST', body });
+        state.story.editor = null;
+        await loadStory(state.story.projectId);
+        refreshSidebarStory(true);
+        toast(`${config.noun} saved.`, 'success');
+      } catch (err) {
+        toast(err.message || `Could not save the ${config.noun.toLowerCase()}.`, 'error');
+      }
+    });
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn-ghost btn-sm';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => {
+      state.story.editor = null;
+      renderStoryReferences(type);
+    });
+    actions.append(save, cancel);
+    form.appendChild(actions);
+    container.appendChild(form);
+  }
+}
+
+function renderStoryScenes() {
+  const story = state.story.data;
+  const container = $('#story-scenes');
+  if (!story) return;
+  container.innerHTML = '';
+  const scenes = story.scenes || [];
+  if (!scenes.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'No scenes yet. Add a scene or generate reference material.';
+    container.appendChild(empty);
+  }
+  const approvedCharacters = (story.characters || []).filter((item) => item.approved);
+  const approvedLocations = (story.locations || []).filter((item) => item.approved);
+
+  scenes.forEach((scene, index) => {
+    const card = document.createElement('div');
+    card.className = 'story-scene-card';
+    card.dataset.sceneCard = scene.id;
+    const head = document.createElement('div');
+    head.className = 'story-scene-head';
+    const title = document.createElement('strong');
+    title.textContent = `Scene ${index + 1}`;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-ghost btn-sm';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => {
+      story.scenes = story.scenes.filter((item) => item.id !== scene.id);
+      storyMarkDirty();
+      renderStoryScenes();
+    });
+    head.append(title, remove);
+    card.appendChild(head);
+
+    const grid = document.createElement('div');
+    grid.className = 'story-form-grid';
+    const fields = {};
+    [
+      { key: 'title', label: 'Title', max: 200 },
+      { key: 'beat', label: 'Beat', max: 2000 },
+      { key: 'props', label: 'Props', max: 2000 },
+      { key: 'action', label: 'Action', max: 5000, multiline: true },
+    ].forEach((config) => {
+      const field = storyFormField(config);
+      field.input.value = scene[config.key] || '';
+      field.input.addEventListener('input', storyMarkDirty);
+      fields[config.key] = field.input;
+      grid.appendChild(field.wrapper);
+    });
+
+    const locationField = document.createElement('label');
+    locationField.className = 'field';
+    const locationLabel = document.createElement('span');
+    locationLabel.className = 'field-label';
+    locationLabel.textContent = 'Location';
+    const locationSelect = document.createElement('select');
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'No linked location';
+    locationSelect.appendChild(none);
+    (story.locations || []).forEach((location) => {
+      const option = document.createElement('option');
+      option.value = location.id;
+      option.textContent = `${location.name}${location.approved ? '' : ' (not approved)'}`;
+      locationSelect.appendChild(option);
+    });
+    locationSelect.value = scene.locationId || '';
+    locationSelect.addEventListener('change', storyMarkDirty);
+    locationField.append(locationLabel, locationSelect);
+    grid.appendChild(locationField);
+
+    const locationTextField = storyFormField({ key: 'locationText', label: 'Or unlinked location name', max: 200 });
+    locationTextField.input.value = scene.location || '';
+    locationTextField.input.addEventListener('input', storyMarkDirty);
+    fields.locationText = locationTextField.input;
+    grid.appendChild(locationTextField.wrapper);
+
+    const characterNamesField = storyFormField({ key: 'characterNames', label: 'Or unlinked character names (comma separated)', max: 2000 });
+    characterNamesField.input.value = (scene.characters || []).join(', ');
+    characterNamesField.input.addEventListener('input', storyMarkDirty);
+    fields.characterNames = characterNamesField.input;
+    grid.appendChild(characterNamesField.wrapper);
+
+    const characterField = document.createElement('div');
+    characterField.className = 'field story-span';
+    const characterLabel = document.createElement('span');
+    characterLabel.className = 'field-label';
+    characterLabel.textContent = 'Characters';
+    const characterList = document.createElement('div');
+    characterList.className = 'story-check-list';
+    (story.characters || []).forEach((character) => {
+      const label = document.createElement('label');
+      label.className = 'story-check';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = character.id;
+      checkbox.checked = (scene.characterIds || []).includes(character.id);
+      checkbox.addEventListener('change', storyMarkDirty);
+      label.append(checkbox, document.createTextNode(`${character.name}${character.approved ? '' : ' (not approved)'}`));
+      characterList.appendChild(label);
+    });
+    characterField.append(characterLabel, characterList);
+    grid.appendChild(characterField);
+    card.appendChild(grid);
+    card._storyFields = { ...fields, locationSelect, characterList };
+    container.appendChild(card);
+  });
+
+  $('#story-add-scene').disabled = false;
+  $('#story-save-scenes').disabled = false;
+  $('#story-scene-hint').textContent = approvedCharacters.length || approvedLocations.length
+    ? 'Only approved locations and characters can be linked. The server rejects unapproved links.'
+    : 'Approve at least one character and location before linking scenes.';
+}
+
+async function saveStoryScenes() {
+  const cards = Array.from($('#story-scenes').querySelectorAll('.story-scene-card'));
+  const scenes = cards.map((card) => {
+    const fields = card._storyFields;
+    const locationId = fields.locationSelect.value;
+    const location = (state.story.data.locations || []).find((item) => item.id === locationId);
+    const characterIds = Array.from(fields.characterList.querySelectorAll('input:checked')).map((input) => input.value);
+    const selectedCharacters = characterIds.map((id) => (state.story.data.characters || []).find((item) => item.id === id)).filter(Boolean).map((item) => item.name);
+    const unlinkedCharacterNames = fields.characterNames.value.split(',').map((value) => value.trim()).filter(Boolean);
+    return {
+      id: card.dataset.sceneCard,
+      title: fields.title.value,
+      beat: fields.beat.value,
+      props: fields.props.value,
+      action: fields.action.value,
+      location: location ? location.name : fields.locationText.value.trim(),
+      locationId,
+      characters: selectedCharacters.length ? selectedCharacters : unlinkedCharacterNames,
+      characterIds,
+    };
+  });
+  try {
+    const { scenes: saved } = await api(`/api/story/${encodeURIComponent(state.story.projectId)}/scenes`, {
+      method: 'PUT',
+      body: { scenes },
+    });
+    state.story.data.scenes = saved;
+    state.story.dirty = false;
+    await loadStory(state.story.projectId);
+    refreshSidebarStory(true);
+    toast('Scenes saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the scenes.', 'error');
+  }
+}
+
+function renderStorySheetOptions() {
+  const story = state.story.data;
+  const select = $('#story-sheet-character');
+  if (!story || !select) return;
+  select.innerHTML = '';
+  story.characters.forEach((character) => {
+    const option = document.createElement('option');
+    option.value = character.id;
+    option.textContent = character.name;
+    select.appendChild(option);
+  });
+  if (story.characters.some((character) => character.id === state.story.sheetCharacterId)) {
+    select.value = state.story.sheetCharacterId;
+  } else {
+    state.story.sheetCharacterId = story.characters[0] ? story.characters[0].id : '';
+    select.value = state.story.sheetCharacterId;
+  }
+  if (!story.characters.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No characters';
+    select.appendChild(option);
+  }
+}
+
+function renderStorySheets() {
+  const story = state.story.data;
+  const container = $('#story-sheets');
+  if (!story || !container) return;
+  container.innerHTML = '';
+  const characterId = state.story.sheetCharacterId;
+  const sheets = (story.characterSheets || [])
+    .filter((sheet) => sheet.characterId === characterId)
+    .sort((a, b) => b.version - a.version);
+  if (!sheets.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'No character sheets yet. Generate a photorealistic reference image for this character.';
+    container.appendChild(empty);
+  }
+  sheets.forEach((sheet) => {
+    const card = document.createElement('div');
+    card.className = 'story-sheet-version';
+    const head = document.createElement('div');
+    head.className = 'story-prompt-head';
+    const version = document.createElement('strong');
+    version.textContent = `Version ${sheet.version}`;
+    const status = document.createElement('span');
+    status.className = `story-badge ${sheet.status === 'final' ? 'approved' : 'draft'}`;
+    status.textContent = sheet.status === 'final' ? 'Final' : 'Draft';
+    const meta = document.createElement('span');
+    meta.className = 'story-ref-meta';
+    meta.textContent = sheet.imageModel || 'Image model not recorded';
+    head.append(version, status, meta);
+
+    const img = document.createElement('img');
+    img.className = 'story-sheet-image';
+    img.src = `/api/story/sheet-image/${encodeURIComponent(story.projectId)}/${encodeURIComponent(sheet.file)}`;
+    img.alt = `Character sheet version ${sheet.version}`;
+    img.loading = 'lazy';
+
+    const actions = document.createElement('div');
+    actions.className = 'story-form-actions';
+    if (sheet.status !== 'final') {
+      const promote = document.createElement('button');
+      promote.type = 'button';
+      promote.className = 'btn btn-secondary btn-sm';
+      promote.textContent = 'Promote to final';
+      promote.addEventListener('click', async () => {
+        try {
+          await api(`/api/story/sheets/${encodeURIComponent(sheet.id)}/promote`, { method: 'POST' });
+          await loadStory(state.story.projectId);
+          toast('Character sheet promoted to final.', 'success');
+        } catch (err) {
+          toast(err.message || 'Could not promote the character sheet.', 'error');
+        }
+      });
+      actions.appendChild(promote);
+    }
+    card.append(head, img, actions);
+    container.appendChild(card);
+  });
+}
+
+function promptDiffTokens(textValue) {
+  return String(textValue || '').split(/(\s+)/).filter((token) => token !== '');
+}
+
+function appendPromptDiff(column, textValue, otherText) {
+  const heading = document.createElement('h4');
+  heading.textContent = 'Version text';
+  const body = document.createElement('div');
+  body.className = 'prompt-diff-text';
+  const tokens = promptDiffTokens(textValue);
+  const other = promptDiffTokens(otherText);
+  let prefix = 0;
+  while (prefix < tokens.length && prefix < other.length && tokens[prefix] === other[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < tokens.length - prefix &&
+    suffix < other.length - prefix &&
+    tokens[tokens.length - 1 - suffix] === other[other.length - 1 - suffix]
+  ) suffix += 1;
+  const before = tokens.slice(0, prefix).join('');
+  const changed = tokens.slice(prefix, tokens.length - suffix).join('');
+  const after = suffix ? tokens.slice(tokens.length - suffix).join('') : '';
+  body.appendChild(document.createTextNode(before));
+  if (changed) {
+    const mark = document.createElement('mark');
+    mark.textContent = changed;
+    body.appendChild(mark);
+  }
+  body.appendChild(document.createTextNode(after));
+  column.append(heading, body);
+}
+
+async function generateStorySheet() {
+  const projectId = state.story.projectId;
+  const characterId = state.story.sheetCharacterId;
+  if (!characterId) return toast('Add or choose a character first.', 'error');
+  if (!state.user) return showAuth();
+  if (!state.user.hasBytePlusKey) {
+    toast('Save your BytePlus API key in Settings first.', 'error');
+    switchTab('apis');
+    return;
+  }
+  const button = $('#story-generate-sheet');
+  button.disabled = true;
+  button.textContent = 'Generating…';
+  try {
+    await api(`/api/story/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterId)}/sheets/generate`, {
+      method: 'POST',
+    });
+    await loadStory(projectId);
+    refreshSidebarStory(true);
+    toast('Character sheet image generated.', 'success');
+  } catch (err) {
+    if (err.code === 'NO_IMAGEGEN_KEY') {
+      state.user.hasBytePlusKey = false;
+      renderBytePlusKeyState();
+    }
+    toast(err.message || 'Could not generate the character sheet.', 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '✨ Generate character sheet';
+  }
+}
+
+function renderStoryWarnings() {
+  const story = state.story.data;
+  const container = $('#story-warnings');
+  if (!story) return;
+  container.innerHTML = '';
+  const warnings = story.warnings || [];
+  $('#story-warning-count').textContent = warnings.length ? `${warnings.length} warning(s)` : 'No warnings';
+  if (!warnings.length) {
+    const clean = document.createElement('p');
+    clean.className = 'hint';
+    clean.textContent = 'No continuity warnings. This does not imply publication approval.';
+    container.appendChild(clean);
+    return;
+  }
+  warnings.forEach((warning) => {
+    const row = document.createElement('div');
+    row.className = 'story-warning';
+    const text = document.createElement('span');
+    text.textContent = warning.message;
+    row.appendChild(text);
+    if (warning.sceneId) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-ghost btn-sm';
+      button.textContent = 'Go to scene';
+      button.addEventListener('click', () => {
+        const card = document.querySelector(`[data-scene-card="${warning.sceneId}"]`);
+        if (card) {
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          card.classList.add('story-flash');
+          setTimeout(() => card.classList.remove('story-flash'), 1200);
+        }
+      });
+      row.appendChild(button);
+    } else if (warning.referenceId) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-ghost btn-sm';
+      button.textContent = 'Go to reference';
+      button.addEventListener('click', () => {
+        const card = document.querySelector(`[data-reference-id="${warning.referenceId}"]`);
+        if (card) {
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          card.classList.add('story-flash');
+          setTimeout(() => card.classList.remove('story-flash'), 1200);
+        }
+      });
+      row.appendChild(button);
+    }
+    container.appendChild(row);
+  });
+}
+
+async function saveStoryBrief() {
+  try {
+    await api(`/api/story/${encodeURIComponent(state.story.projectId)}/brief`, {
+      method: 'PUT',
+      body: {
+        title: $('#story-brief-title').value,
+        logline: $('#story-brief-logline').value,
+        premise: $('#story-brief-premise').value,
+        tone: $('#story-brief-tone').value,
+        genre: $('#story-brief-genre').value,
+        audience: $('#story-brief-audience').value,
+        setting: $('#story-brief-setting').value,
+      },
+    });
+    await loadStory(state.story.projectId);
+    refreshSidebarStory(true);
+    toast('Story brief saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the story brief.', 'error');
+  }
+}
+
+async function generateStoryWorkspace(replace = false) {
+  const projectId = state.story.projectId;
+  if (!projectId) return toast('Choose a project first.', 'error');
+  if (!state.user) return showAuth();
+  if (!state.user.hasApiKey) {
+    toast('Save your DeepSeek API key in Settings first.', 'error');
+    switchTab('apis');
+    return;
+  }
+
+  const button = $('#story-generate-workspace');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Generating…';
+  }
+  let retryReplace = false;
+  try {
+    const data = await api(`/api/story/${encodeURIComponent(projectId)}/workspace/generate`, {
+      method: 'POST',
+      body: { replace },
+    });
+    state.story.data = data.story;
+    renderStory();
+    refreshSidebarStory(true);
+    const note = data.workspace && data.workspace.replaced
+      ? 'Structured workspace replaced with newly generated drafts (awaiting review).'
+      : 'Structured Story Workspace drafts generated from the reference material (awaiting review).';
+    toast(note, 'success');
+  } catch (err) {
+    if (err.code === 'WORKSPACE_REPLACE_REQUIRED') {
+      const confirmReplace = confirm(
+        'Structured Story Workspace records already exist for this project. Replace them — including any edits or approvals — with newly generated drafts?'
+      );
+      if (confirmReplace) retryReplace = true;
+      else toast('Generation cancelled. Existing structured records were kept.', 'error');
+    } else {
+      if (err.code === 'NO_API_KEY') {
+        state.user.hasApiKey = false;
+        renderKeyState();
+      }
+      toast(err.message || 'Could not generate the workspace.', 'error');
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '✨ Generate workspace from reference';
+    }
+  }
+
+  if (retryReplace) return generateStoryWorkspace(true);
+}
+
+$('#story-project').addEventListener('change', (event) => {
+  if (state.story.dirty && !confirm('Discard unsaved story changes?')) {
+    event.target.value = state.story.projectId;
+    return;
+  }
+  state.story.projectId = event.target.value;
+  state.story.editor = null;
+  state.story.sheetCharacterId = '';
+  loadStory(state.story.projectId);
+});
+$('#story-refresh').addEventListener('click', () => loadStory(state.story.projectId));
+$('#story-retry').addEventListener('click', () => loadStory(state.story.projectId));
+$('#story-generate-workspace').addEventListener('click', () => generateStoryWorkspace(false));
+$('#story-save-brief').addEventListener('click', saveStoryBrief);
+$('#story-validate').addEventListener('click', async () => {
+  try {
+    const { warnings } = await api(`/api/story/${encodeURIComponent(state.story.projectId)}/validate`);
+    state.story.data.warnings = warnings;
+    renderStoryWarnings();
+    toast(warnings.length ? `Found ${warnings.length} continuity warning(s).` : 'No continuity warnings.', warnings.length ? 'error' : 'success');
+  } catch (err) {
+    toast(err.message || 'Could not validate continuity.', 'error');
+  }
+});
+['#story-add-character', '#story-add-location', '#story-add-style'].forEach((selector, index) => {
+  $(selector).addEventListener('click', () => {
+    state.story.editor = { type: ['character', 'location', 'style'][index], id: null };
+    renderStoryReferences(state.story.editor.type);
+  });
+});
+$('#story-add-scene').addEventListener('click', () => {
+  state.story.data.scenes.push({
+    id: `scene-${Date.now()}`,
+    order: state.story.data.scenes.length,
+    title: `Scene ${state.story.data.scenes.length + 1}`,
+    beat: '',
+    props: '',
+    action: '',
+    location: '',
+    characters: [],
+    locationId: '',
+    characterIds: [],
+  });
+  storyMarkDirty();
+  renderStoryScenes();
+});
+$('#story-save-scenes').addEventListener('click', saveStoryScenes);
+$('#story-sheet-character').addEventListener('change', (event) => {
+  state.story.sheetCharacterId = event.target.value;
+  renderStorySheets();
+});
+$('#story-generate-sheet').addEventListener('click', generateStorySheet);
+$('#story-content').addEventListener('input', storyMarkDirty);
+$('#story-content').addEventListener('change', storyMarkDirty);
+
+$('#ref-open-story').addEventListener('click', () => switchTab('story'));
+$('#gen-open-story').addEventListener('click', () => switchTab('story'));
+
+// ---------------------------------------------------------------------------
+// Sidebar: workflow checklist + DeepSeek chat
+// ---------------------------------------------------------------------------
+const WORKFLOW_STEPS = [
+  { id: 'idea', label: 'Idea captured', icon: '💡' },
+  { id: 'reference', label: 'Reference material', icon: '📚' },
+  { id: 'brief', label: 'Story brief', icon: '📖' },
+  { id: 'characters', label: 'Character bibles', icon: '👤' },
+  { id: 'locations', label: 'Location references', icon: '📍' },
+  { id: 'style', label: 'Style reference', icon: '🎨' },
+  { id: 'scenes', label: 'Scene matrix', icon: '🎬' },
+  { id: 'prompts', label: 'Generation prompts', icon: '✍️' },
+  { id: 'images', label: 'Images generated', icon: '🖼️' },
+  { id: 'done', label: 'Project completed', icon: '✅' },
+];
+
+function sidebarProject() {
+  return state.projects.find((p) => p.id === state.sidebar.projectId) || null;
+}
+
+function workflowStepDone(step, project, story) {
+  switch (step.id) {
+    case 'idea': return Boolean(project && (project.idea || '').trim());
+    case 'reference': return Boolean(project && (project.referenceMaterial || '').trim());
+    case 'brief': {
+      if (!story || !story.brief) return false;
+      return Boolean(story.brief.logline || story.brief.tone || story.brief.genre || story.brief.audience || story.brief.setting);
+    }
+    case 'characters': return Boolean(story && story.characters && story.characters.length);
+    case 'locations': return Boolean(story && story.locations && story.locations.length);
+    case 'style': return Boolean(story && story.styles && story.styles.length);
+    case 'scenes':
+      return Boolean(story && story.scenes && story.scenes.length) ||
+        Boolean(project && project.scenes && project.scenes.length);
+    case 'prompts': return Boolean(project && project.generationPrompts && project.generationPrompts.length);
+    case 'images': return Boolean(project && project.sceneImages && project.sceneImages.length);
+    case 'done': return Boolean(project && project.status === 'Done');
+    default: return false;
+  }
+}
+
+function renderWorkflowChecklist() {
+  const list = $('#workflow-checklist');
+  if (!list) return;
+  const project = sidebarProject();
+  const story = state.sidebar.storyProjectId === state.sidebar.projectId && state.sidebar.projectId
+    ? state.sidebar.story
+    : null;
+  list.innerHTML = '';
+  WORKFLOW_STEPS.forEach((step) => {
+    const done = workflowStepDone(step, project, story);
+    const item = document.createElement('li');
+    item.className = 'checklist-item' + (done ? ' done' : '');
+    const icon = document.createElement('span');
+    icon.className = 'checklist-icon';
+    icon.textContent = step.icon;
+    const label = document.createElement('span');
+    label.className = 'checklist-label';
+    label.textContent = step.label;
+    const mark = document.createElement('span');
+    mark.className = 'checklist-mark';
+    mark.textContent = done ? '✓' : '○';
+    item.append(icon, label, mark);
+    list.appendChild(item);
+  });
+}
+
+function renderSidebarProjects() {
+  const select = $('#sidebar-project');
+  if (!select) return;
+  const previous = state.sidebar.projectId;
+  select.innerHTML = '';
+  if (!state.projects.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No projects yet';
+    select.appendChild(option);
+    select.disabled = true;
+    select.value = '';
+    state.sidebar.projectId = '';
+    state.sidebar.story = null;
+    state.sidebar.storyProjectId = '';
+    renderWorkflowChecklist();
+    return;
+  }
+  select.disabled = false;
+  state.projects.forEach((p) => {
+    const option = document.createElement('option');
+    option.value = p.id;
+    option.textContent = p.status === 'Done' ? `${p.title} ✓` : p.title;
+    select.appendChild(option);
+  });
+  const valid = state.projects.some((p) => p.id === previous);
+  const next = valid ? previous : state.projects[0].id;
+  if (next !== state.sidebar.projectId) state.sidebar.projectId = next;
+  select.value = state.sidebar.projectId;
+  renderWorkflowChecklist();
+  if (state.sidebar.storyProjectId !== state.sidebar.projectId && state.sidebar.projectId) {
+    refreshSidebarStory();
+  }
+}
+
+async function refreshSidebarStory(force = false) {
+  const projectId = state.sidebar.projectId;
+  if (!projectId) {
+    state.sidebar.story = null;
+    state.sidebar.storyProjectId = '';
+    renderWorkflowChecklist();
+    return;
+  }
+  if (!force && state.sidebar.storyProjectId === projectId) {
+    renderWorkflowChecklist();
+    return;
+  }
+  try {
+    const { story } = await api(`/api/story/${encodeURIComponent(projectId)}`);
+    if (state.sidebar.projectId !== projectId) return;
+    state.sidebar.story = story;
+    state.sidebar.storyProjectId = projectId;
+  } catch (_) {
+    state.sidebar.story = null;
+    state.sidebar.storyProjectId = projectId;
+  }
+  if (state.sidebar.projectId === projectId) renderWorkflowChecklist();
+}
+
+function allScenesHaveImages(project) {
+  const scenes = Array.isArray(project.scenes) ? project.scenes : [];
+  if (!scenes.length) return false;
+  const images = Array.isArray(project.sceneImages) ? project.sceneImages : [];
+  return scenes.every((scene) => images.some((image) => image.sceneId === scene.id));
+}
+
+function sidebarNextStepInfo() {
+  const project = sidebarProject();
+  if (!project) {
+    return { disabled: true, label: '→ Next step', title: 'Select a project.' };
+  }
+  if (project.status === 'Done') {
+    return { disabled: true, label: '✓ Completed', title: 'This project is complete.' };
+  }
+  const stage = project.stage || 'Idea Stage';
+  if (stage === 'Idea Stage') {
+    const ready = Boolean((project.idea || '').trim());
+    return {
+      disabled: !ready,
+      label: '→ Move to Reference Stage',
+      title: ready ? 'Advance this project to Reference Stage' : 'Capture an idea first.',
+    };
+  }
+  if (stage === 'Reference Stage') {
+    const ready = Boolean((project.referenceMaterial || '').trim());
+    return {
+      disabled: !ready,
+      label: '→ Move to Generation Stage',
+      title: ready ? 'Advance this project to Generation Stage' : 'Generate reference material first.',
+    };
+  }
+  const ready = allScenesHaveImages(project);
+  return {
+    disabled: !ready,
+    label: '✓ Complete project',
+    title: ready ? 'Mark this project complete' : 'Generate all scene images first.',
+  };
+}
+
+function renderSidebarNextStep() {
+  const button = $('#sidebar-next-step');
+  if (!button) return;
+  const info = sidebarNextStepInfo();
+  button.disabled = info.disabled;
+  button.textContent = info.label;
+  button.title = info.title;
+}
+
+function renderSidebar() {
+  renderSidebarProjects();
+  renderSidebarNextStep();
+  if (state.chat.mode === 'reviewer') renderReviewer();
+}
+
+function resetSidebarAndChat() {
+  state.sidebar.projectId = '';
+  state.sidebar.story = null;
+  state.sidebar.storyProjectId = '';
+  state.chat.mode = 'guide';
+  state.chat.guide = [];
+  state.chat.reviewer = [];
+  state.chat.busy = false;
+  state.reviewer.projectId = '';
+  state.reviewer.box = 'scene-prompts';
+  state.reviewer.fields = [];
+  state.reviewer.loading = false;
+  state.reviewer.running = false;
+  state.reviewer.error = '';
+  state.reviewer.loadedProjectId = '';
+  state.reviewer.loadedBox = '';
+  state.reviewer.loadToken += 1;
+  state.reviewer.runToken += 1;
+}
+
+// Chat
+function chatMessages() {
+  return state.chat.mode === 'reviewer' ? state.chat.reviewer : state.chat.guide;
+}
+
+function setChatBusy(busy) {
+  state.chat.busy = busy;
+  const send = $('#chat-send');
+  if (send) send.disabled = busy;
+  const typing = $('#chat-typing');
+  if (typing) typing.classList.toggle('hidden', !busy);
+}
+
+const REVIEWER_STATUS_LABELS = {
+  pending: 'Pending',
+  processing: 'Processing',
+  reviewed: 'Reviewed',
+  failed: 'Failed',
+};
+
+function guideHasCredentials() {
+  if (!state.user) return false;
+  const provider = state.user.guideProvider || 'deepseek';
+  if (provider === 'anthropic') return Boolean(state.user.hasAnthropicKey);
+  if (provider === 'openai') return Boolean(state.user.hasOpenAIKey);
+  return Boolean(state.user.hasApiKey);
+}
+
+function reviewerHasCredentials() {
+  if (!state.user) return false;
+  const provider = state.user.reviewerProvider || 'deepseek';
+  if (provider === 'anthropic') return Boolean(state.user.hasAnthropicKey);
+  if (provider === 'openai') return Boolean(state.user.hasOpenAIKey);
+  return Boolean(state.user.hasApiKey);
+}
+
+function reviewerProjectCandidates() {
+  const active = state.projects.filter((project) => project.status !== 'Done');
+  const pool = active.length ? active : state.projects;
+  return pool.slice().sort((a, b) => {
+    const stageOrder = PROJECT_STAGES.indexOf(a.stage || 'Idea Stage') - PROJECT_STAGES.indexOf(b.stage || 'Idea Stage');
+    if (stageOrder) return stageOrder;
+    return String(a.title || '').localeCompare(String(b.title || ''));
+  });
+}
+
+function selectedReviewerProject() {
+  return state.projects.find((project) => project.id === state.reviewer.projectId) || null;
+}
+
+function reviewerStatusIcon(status) {
+  const icon = document.createElement('span');
+  const safeStatus = REVIEWER_STATUS_LABELS[status] ? status : 'pending';
+  icon.className = `reviewer-status-icon ${safeStatus}`;
+  icon.setAttribute('aria-label', REVIEWER_STATUS_LABELS[safeStatus]);
+  icon.title = REVIEWER_STATUS_LABELS[safeStatus];
+  if (safeStatus === 'processing') {
+    const spinner = document.createElement('span');
+    spinner.className = 'reviewer-spinner';
+    icon.appendChild(spinner);
+  } else {
+    icon.textContent = safeStatus === 'reviewed' ? '✓' : safeStatus === 'failed' ? '✕' : '○';
+  }
+  return icon;
+}
+
+function renderReviewerProjectSelect() {
+  const select = $('#reviewer-project');
+  if (!select) return;
+  const candidates = reviewerProjectCandidates();
+  const signature = candidates
+    .map((project) => `${project.id}:${project.stage || ''}:${project.title || ''}`)
+    .join('|');
+
+  if (select.dataset.signature !== signature) {
+    select.innerHTML = '';
+    if (!candidates.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'No projects yet';
+      select.appendChild(option);
+    } else {
+      candidates.forEach((project) => {
+        const option = document.createElement('option');
+        option.value = project.id;
+        option.textContent = project.status === 'Done' ? `${project.title} ✓` : project.title;
+        select.appendChild(option);
+      });
+    }
+    select.dataset.signature = signature;
+  }
+
+  select.disabled = !candidates.length;
+  if (!candidates.some((project) => project.id === state.reviewer.projectId)) {
+    const nextId = candidates[0] ? candidates[0].id : '';
+    if (nextId !== state.reviewer.projectId) {
+      state.reviewer.running = false;
+      state.reviewer.loadToken += 1;
+      state.reviewer.runToken += 1;
+    }
+    state.reviewer.projectId = nextId;
+    state.reviewer.fields = [];
+    state.reviewer.error = '';
+    state.reviewer.loadedProjectId = '';
+    state.reviewer.loadedBox = '';
+  }
+  if (!candidates.length) select.value = '';
+  else select.value = state.reviewer.projectId;
+}
+
+function renderReviewerBoxSelect() {
+  const select = $('#reviewer-box');
+  if (!select) return;
+  if (!select.options.length) {
+    REVIEWER_BOX_OPTIONS.forEach((box) => {
+      const option = document.createElement('option');
+      option.value = box.id;
+      option.textContent = box.label;
+      select.appendChild(option);
+    });
+  }
+  if (!REVIEWER_BOX_OPTIONS.some((box) => box.id === state.reviewer.box)) {
+    state.reviewer.box = 'scene-prompts';
+  }
+  select.value = state.reviewer.box;
+}
+
+function reviewerBoxLabel() {
+  const box = REVIEWER_BOX_OPTIONS.find((item) => item.id === state.reviewer.box);
+  return box ? box.label : 'Scene Prompts';
+}
+
+function renderReviewerFields() {
+  const list = $('#reviewer-fields');
+  const empty = $('#reviewer-empty');
+  if (!list) return;
+  list.innerHTML = '';
+  const fields = state.reviewer.fields;
+
+  fields.forEach((field) => {
+    const item = document.createElement('li');
+    item.className = 'reviewer-field-item';
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `reviewer-field-row ${field.status || 'pending'}`;
+    row.dataset.fieldId = field.id;
+    row.title = `${field.label} — ${REVIEWER_STATUS_LABELS[field.status] || 'Pending'}`;
+
+    const label = document.createElement('span');
+    label.className = 'reviewer-field-label';
+    label.textContent = field.label;
+
+    row.append(label, reviewerStatusIcon(field.status || 'pending'));
+    row.addEventListener('click', () => openReviewerDetails(field.id));
+    item.appendChild(row);
+    list.appendChild(item);
+  });
+
+  if (empty) {
+    empty.classList.toggle('hidden', Boolean(fields.length));
+    empty.textContent = state.reviewer.loading
+      ? 'Loading fields…'
+      : state.reviewer.error
+        ? state.reviewer.error
+        : 'No fields in this section yet.';
+  }
+
+  const details = $('#reviewer-details-btn');
+  if (details) details.disabled = !fields.length;
+}
+
+function renderReviewer() {
+  const stageLabel = $('#reviewer-stage-label');
+  const boxLabel = $('#reviewer-box-label');
+  const run = $('#reviewer-run');
+  const rerun = $('#reviewer-rerun');
+  const hint = $('#reviewer-hint');
+
+  renderReviewerProjectSelect();
+  renderReviewerBoxSelect();
+  const project = selectedReviewerProject();
+
+  if (stageLabel) stageLabel.textContent = project ? project.stage || 'Idea Stage' : 'No project';
+  if (boxLabel) boxLabel.textContent = reviewerBoxLabel();
+  renderReviewerFields();
+
+  if (!project) {
+    if (run) {
+      run.disabled = true;
+      run.textContent = 'Review';
+    }
+    if (rerun) rerun.disabled = true;
+    if (hint) hint.textContent = 'Choose a project to review.';
+    return;
+  }
+
+  if (!state.reviewer.loading
+    && !state.reviewer.running
+    && (state.reviewer.loadedProjectId !== state.reviewer.projectId
+      || state.reviewer.loadedBox !== state.reviewer.box)) {
+    loadReviewerFields();
+  }
+
+  if (run) {
+    run.disabled = state.reviewer.loading
+      || state.reviewer.running
+      || !state.reviewer.fields.length
+      || !reviewerHasCredentials();
+    run.textContent = state.reviewer.running ? 'Reviewing…' : 'Review';
+  }
+  if (rerun) rerun.disabled = run ? run.disabled : true;
+
+  if (hint) {
+    if (!reviewerHasCredentials()) {
+      hint.textContent = 'Save the Reviewer API key in Settings to run reviews.';
+    } else if (state.reviewer.error) {
+      hint.textContent = state.reviewer.error;
+    } else if (state.reviewer.loading) {
+      hint.textContent = 'Loading fields…';
+    } else if (state.reviewer.running) {
+      const processing = state.reviewer.fields.filter((field) => field.status === 'processing').length;
+      hint.textContent = `Reviewing ${processing} field${processing === 1 ? '' : 's'}…`;
+    } else if (!state.reviewer.fields.length) {
+      hint.textContent = 'No fields to review in this section.';
+    } else {
+      const reviewed = state.reviewer.fields.filter((field) => field.status === 'reviewed').length;
+      const failed = state.reviewer.fields.filter((field) => field.status === 'failed').length;
+      const pending = state.reviewer.fields.filter((field) => field.status === 'pending').length;
+      hint.textContent = `${reviewed} reviewed · ${failed} failed · ${pending} pending`;
+    }
+  }
+}
+
+async function loadReviewerFields() {
+  const projectId = state.reviewer.projectId;
+  const box = state.reviewer.box;
+  if (!projectId) {
+    state.reviewer.fields = [];
+    state.reviewer.loading = false;
+    renderReviewer();
+    return;
+  }
+
+  const token = ++state.reviewer.loadToken;
+  state.reviewer.loading = true;
+  state.reviewer.error = '';
+  state.reviewer.fields = [];
+  state.reviewer.loadedProjectId = projectId;
+  state.reviewer.loadedBox = box;
+  renderReviewer();
+
+  try {
+    const data = await api(
+      `/api/reviewer/fields?projectId=${encodeURIComponent(projectId)}&box=${encodeURIComponent(box)}`
+    );
+    if (token !== state.reviewer.loadToken
+      || projectId !== state.reviewer.projectId
+      || box !== state.reviewer.box) return;
+    state.reviewer.fields = (data.fields || []).map((field) => {
+      const review = field.review;
+      const hasResult = Boolean(review && (review.status === 'reviewed' || review.status === 'failed'));
+      return {
+        id: field.id,
+        label: field.label,
+        hasContent: Boolean(field.hasContent),
+        contentHash: field.contentHash || '',
+        status: hasResult ? (review.status === 'reviewed' ? 'reviewed' : 'failed') : 'pending',
+        summary: review ? review.summary || '' : '',
+        findings: review ? review.findings || [] : [],
+        suggestions: review ? review.suggestions || [] : [],
+        model: review ? review.model || null : null,
+        reviewedAt: review ? review.reviewedAt || '' : '',
+      };
+    });
+  } catch (err) {
+    if (token !== state.reviewer.loadToken) return;
+    state.reviewer.error = err.message || 'Could not load fields.';
+    state.reviewer.fields = [];
+  } finally {
+    if (token === state.reviewer.loadToken) {
+      state.reviewer.loading = false;
+      renderReviewer();
+    }
+  }
+}
+
+async function runReviewer(force = false) {
+  if (state.reviewer.running || state.reviewer.loading || !state.reviewer.fields.length) return;
+  if (!state.user) return showAuth();
+  if (!reviewerHasCredentials()) {
+    toast('Save the Reviewer API key in Settings first.', 'error');
+    return;
+  }
+  const projectId = state.reviewer.projectId;
+  const box = state.reviewer.box;
+  const runToken = ++state.reviewer.runToken;
+  const fields = state.reviewer.fields;
+  // The server checks current content and settings, including changes made in another tab.
+  const pending = fields;
+
+  state.reviewer.running = true;
+  state.reviewer.error = '';
+  pending.forEach((field) => {
+    field.status = 'processing';
+    field.summary = '';
+    field.findings = [];
+    field.suggestions = [];
+  });
+  renderReviewer();
+
+  try {
+    const data = await api('/api/reviewer/review', {
+      method: 'POST',
+      body: { projectId, box, force },
+    });
+    if (runToken !== state.reviewer.runToken || projectId !== state.reviewer.projectId || box !== state.reviewer.box) {
+      return;
+    }
+    const byId = new Map((data.reviews || []).map((review) => [review.id, review]));
+    fields.forEach((field) => {
+      const review = byId.get(field.id);
+      if (!review) return;
+      field.status = review.status === 'reviewed' ? 'reviewed' : 'failed';
+      field.summary = review.summary || '';
+      field.findings = Array.isArray(review.findings) ? review.findings : [];
+      field.suggestions = Array.isArray(review.suggestions) ? review.suggestions : [];
+      field.model = review.model || null;
+      field.reviewedAt = review.reviewedAt || '';
+    });
+  } catch (err) {
+    if (runToken !== state.reviewer.runToken) return;
+    state.reviewer.error = err.message || 'The review could not be completed. Try again.';
+    if (err.code === 'NO_API_KEY' && state.user) {
+      state.user.hasApiKey = false;
+      renderKeyState();
+    }
+    pending.forEach((field) => {
+      field.status = 'failed';
+      field.summary = err.message || 'The review could not be completed.';
+      field.findings = [{ severity: 'error', message: err.message || 'The review request failed.' }];
+      field.suggestions = [];
+      field.reviewedAt = new Date().toISOString();
+    });
+  } finally {
+    if (runToken === state.reviewer.runToken) {
+      state.reviewer.running = false;
+      renderReviewer();
+      const reviewed = fields.filter((field) => field.status === 'reviewed').length;
+      const failed = fields.filter((field) => field.status === 'failed').length;
+      if (state.reviewer.error) toast(state.reviewer.error, 'error');
+      else toast(`Review finished: ${reviewed} reviewed, ${failed} failed.`, failed ? 'warn' : 'success');
+    }
+  }
+}
+
+let reviewerReturnFocus = null;
+
+function closeReviewerDetails() {
+  const modal = $('#reviewer-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  state.reviewer.detailFieldId = '';
+  document.removeEventListener('keydown', reviewerModalKeydown);
+  if (reviewerReturnFocus && document.contains(reviewerReturnFocus)) reviewerReturnFocus.focus();
+  reviewerReturnFocus = null;
+}
+
+function reviewerModalKeydown(event) {
+  const modal = $('#reviewer-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeReviewerDetails();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+
+  const focusable = Array.from(
+    modal.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')
+  );
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.focus();
+    return;
+  }
+  if (!modal.contains(document.activeElement)) {
+    event.preventDefault();
+    focusable[0].focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function openReviewerDetails(fieldId = '') {
+  const modal = $('#reviewer-modal');
+  if (!modal || !state.reviewer.fields.length) return;
+  const project = selectedReviewerProject();
+  const boxLabel = reviewerBoxLabel();
+  const title = $('#reviewer-modal-title');
+  const subtitle = $('#reviewer-modal-subtitle');
+  title.textContent = 'Review details';
+  subtitle.textContent = `${project ? project.title : 'Project'} · ${boxLabel}`;
+
+  const list = $('#reviewer-detail-list');
+  list.innerHTML = '';
+  const counts = { reviewed: 0, failed: 0, pending: 0, processing: 0 };
+  state.reviewer.fields.forEach((field) => {
+    counts[field.status] = (counts[field.status] || 0) + 1;
+  });
+  const summary = document.createElement('p');
+  summary.className = 'reviewer-detail-summary';
+  summary.textContent = `${counts.reviewed} reviewed · ${counts.failed} failed · ${counts.pending + counts.processing} pending`;
+  list.appendChild(summary);
+
+  state.reviewer.fields.forEach((field) => {
+    const card = document.createElement('article');
+    card.className = `reviewer-detail${field.id === fieldId ? ' reviewer-detail-focus' : ''}`;
+    const head = document.createElement('div');
+    head.className = 'reviewer-detail-head';
+
+    const label = document.createElement('strong');
+    label.textContent = field.label;
+    const status = document.createElement('span');
+    status.className = 'reviewer-detail-status';
+    status.append(reviewerStatusIcon(field.status || 'pending'));
+    const statusText = document.createElement('span');
+    statusText.textContent = REVIEWER_STATUS_LABELS[field.status] || 'Pending';
+    status.appendChild(statusText);
+    head.append(label, status);
+    card.appendChild(head);
+
+    const summaryText = document.createElement('p');
+    summaryText.className = 'reviewer-detail-copy';
+    summaryText.textContent = field.summary
+      || (field.status === 'processing'
+        ? 'Review in progress…'
+        : field.status === 'reviewed'
+          ? 'No summary was returned.'
+          : 'Not reviewed yet.');
+    card.appendChild(summaryText);
+
+    if (field.findings && field.findings.length) {
+      const findings = document.createElement('ul');
+      findings.className = 'reviewer-findings';
+      field.findings.forEach((finding) => {
+        const item = document.createElement('li');
+        item.className = `reviewer-finding ${finding.severity || 'warning'}`;
+        item.textContent = finding.message || '';
+        findings.appendChild(item);
+      });
+      card.appendChild(findings);
+    }
+
+    if (field.suggestions && field.suggestions.length) {
+      const suggestions = document.createElement('div');
+      suggestions.className = 'reviewer-suggestions';
+      const heading = document.createElement('strong');
+      heading.textContent = 'Suggestions';
+      const ul = document.createElement('ul');
+      field.suggestions.forEach((suggestion) => {
+        const item = document.createElement('li');
+        item.textContent = suggestion;
+        ul.appendChild(item);
+      });
+      suggestions.append(heading, ul);
+      card.appendChild(suggestions);
+    }
+
+    if (field.reviewedAt) {
+      const meta = document.createElement('p');
+      meta.className = 'reviewer-detail-meta';
+      const when = new Date(field.reviewedAt);
+      meta.textContent = Number.isNaN(when.getTime())
+        ? 'Reviewed by the automated reviewer.'
+        : `Reviewed ${when.toLocaleString()}${field.model ? ` · ${field.model}` : ''}`;
+      card.appendChild(meta);
+    }
+
+    list.appendChild(card);
+  });
+
+  reviewerReturnFocus = document.activeElement;
+  modal.classList.remove('hidden');
+  $('#reviewer-modal-close').focus();
+  document.addEventListener('keydown', reviewerModalKeydown);
+  const focusCard = fieldId ? list.querySelector('.reviewer-detail-focus') : null;
+  if (focusCard) focusCard.scrollIntoView({ block: 'nearest' });
+}
+
+function renderChat() {
+  const list = $('#chat-messages');
+  if (!list) return;
+  list.innerHTML = '';
+  const messages = chatMessages();
+  if (!messages.length) {
+    const empty = document.createElement('p');
+    empty.className = 'chat-empty';
+    empty.textContent = 'Ask the guide how to move your project forward.';
+    list.appendChild(empty);
+  } else {
+    messages.forEach((m) => {
+      const row = document.createElement('div');
+      row.className = 'chat-msg ' + (m.role === 'user' ? 'chat-user' : 'chat-bot');
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble';
+      bubble.textContent = m.content;
+      row.appendChild(bubble);
+      list.appendChild(row);
+    });
+  }
+  list.scrollTop = list.scrollHeight;
+
+  const reviewer = state.chat.mode === 'reviewer';
+  const guidePane = $('#guide-chat-pane');
+  const reviewerPane = $('#reviewer-pane');
+  const sidebar = $('#sidebar');
+  if (sidebar) sidebar.classList.toggle('reviewer-mode', reviewer);
+  if (guidePane) guidePane.classList.toggle('hidden', reviewer);
+  if (reviewerPane) reviewerPane.classList.toggle('hidden', !reviewer);
+  $$('.chat-mode').forEach((btn) => {
+    const active = btn.dataset.chatMode === state.chat.mode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+  if (reviewer) renderReviewer();
+}
+
+function switchChatMode(mode) {
+  if (mode !== 'guide' && mode !== 'reviewer') return;
+  if (mode === 'guide') closeReviewerDetails();
+  state.chat.mode = mode;
+  if (mode === 'reviewer' && !state.reviewer.projectId) {
+    const preferred = state.sidebar.projectId;
+    if (state.projects.some((project) => project.id === preferred && project.status !== 'Done')) {
+      state.reviewer.projectId = preferred;
+    }
+  }
+  renderChat();
+}
+
+async function sendChat({ prompt = '', projectId = '', mode = state.chat.mode } = {}) {
+  const input = $('#chat-input');
+  const automatic = Boolean(prompt);
+  const text = (automatic ? prompt : input.value).trim();
+  if (!text || state.chat.busy) return;
+
+  if (mode !== state.chat.mode) switchChatMode(mode);
+  const messages = chatMessages();
+  messages.push({ role: 'user', content: text });
+  if (!automatic) input.value = '';
+  renderChat();
+
+  if (!state.user) return showAuth();
+  if (!guideHasCredentials()) {
+    messages.push({ role: 'assistant', content: 'Save the API key for the Guide provider in Settings first, then I can reply.' });
+    renderChat();
+    return;
+  }
+
+  setChatBusy(true);
+  try {
+    const data = await api('/api/chat', {
+      method: 'POST',
+      body: {
+        mode: state.chat.mode,
+        messages: messages.slice(-20),
+        projectId: projectId || state.sidebar.projectId || '',
+      },
+    });
+    messages.push({ role: 'assistant', content: data.reply });
+    renderChat();
+  } catch (err) {
+    if (err.code === 'NO_API_KEY') {
+      state.user.hasApiKey = false;
+      renderKeyState();
+    }
+    messages.push({ role: 'assistant', content: err.message || 'Could not reach DeepSeek.' });
+    renderChat();
+  } finally {
+    setChatBusy(false);
+  }
+}
+
+$('#sidebar-project').addEventListener('change', (event) => {
+  state.sidebar.projectId = event.target.value;
+  state.sidebar.story = null;
+  state.sidebar.storyProjectId = '';
+  renderWorkflowChecklist();
+  refreshSidebarStory();
+  renderSidebarNextStep();
+});
+$('#sidebar-next-step').addEventListener('click', async () => {
+  const project = sidebarProject();
+  if (!project) return;
+  const stage = project.stage || 'Idea Stage';
+  const patch = stage === 'Idea Stage'
+    ? { stage: 'Reference Stage' }
+    : stage === 'Reference Stage'
+      ? { stage: 'Generation Stage' }
+      : { status: 'Done' };
+  const nextLabel = stage === 'Idea Stage'
+    ? 'Reference Stage'
+    : stage === 'Reference Stage'
+      ? 'Generation Stage'
+      : 'completed';
+  try {
+    const { project: updated } = await api(`/api/projects/${encodeURIComponent(project.id)}`, {
+      method: 'PUT',
+      body: patch,
+    });
+    Object.assign(project, updated);
+    renderProjects();
+    renderSidebarNextStep();
+    if (nextLabel === 'Reference Stage') {
+      state.reference.projectId = project.id;
+      switchTab('reference');
+    }
+    toast(nextLabel === 'completed' ? 'Project completed.' : `Project moved to ${nextLabel}.`, 'success');
+  } catch (err) {
+    toast(err.message || 'Could not advance the project.', 'error');
+  }
+});
+$$('.chat-mode').forEach((btn) => btn.addEventListener('click', () => switchChatMode(btn.dataset.chatMode)));
+$('#chat-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  sendChat();
+});
+
+$('#reviewer-project').addEventListener('change', (event) => {
+  closeReviewerDetails();
+  state.reviewer.projectId = event.target.value;
+  state.reviewer.fields = [];
+  state.reviewer.error = '';
+  state.reviewer.loadedProjectId = '';
+  state.reviewer.loadedBox = '';
+  state.reviewer.running = false;
+  state.reviewer.loadToken += 1;
+  state.reviewer.runToken += 1;
+  renderReviewer();
+});
+
+$('#reviewer-box').addEventListener('change', (event) => {
+  closeReviewerDetails();
+  state.reviewer.box = event.target.value;
+  state.reviewer.fields = [];
+  state.reviewer.error = '';
+  state.reviewer.loadedProjectId = '';
+  state.reviewer.loadedBox = '';
+  state.reviewer.running = false;
+  state.reviewer.loadToken += 1;
+  state.reviewer.runToken += 1;
+  renderReviewer();
+});
+
+$('#reviewer-run').addEventListener('click', () => {
+  runReviewer();
+});
+$('#reviewer-rerun').addEventListener('click', () => runReviewer(true));
+
+$('#reviewer-details-btn').addEventListener('click', () => openReviewerDetails());
+$('#reviewer-modal-close').addEventListener('click', closeReviewerDetails);
+$('#reviewer-modal').addEventListener('click', (event) => {
+  if (event.target === $('#reviewer-modal')) closeReviewerDetails();
+});
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+function switchTab(name) {
+  if (state.story.dirty && name !== 'story' && !confirm('Discard unsaved story changes?')) return;
+  $$('.tab').forEach((t) => {
+    const active = t.dataset.tab === name;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', String(active));
+  });
+  const panels = {
+    ideas: 'panel-ideas',
+    projects: 'panel-projects',
+    reference: 'panel-reference',
+    story: 'panel-story',
+    generation: 'panel-generation',
+    library: 'panel-library',
+    apis: 'panel-apis',
+    docs: 'panel-docs',
+  };
+  Object.entries(panels).forEach(([key, id]) => {
+    $('#' + id).classList.toggle('active', key === name);
+  });
+  if (name === 'projects') renderProjects();
+  if (name === 'reference') renderReferenceProjects();
+  if (name === 'story') renderStoryProjects();
+  if (name === 'generation') renderGenerationProjects();
+  if (name === 'library') loadLibrary();
+  if (name === 'apis') applyAiSettings();
+}
+
+$$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+// ---------------------------------------------------------------------------
+// Context input: file upload + paste (persisted on this device)
+// ---------------------------------------------------------------------------
+const IDEA_CONTEXT_KEY = 'projectWorkflow.ideaContext';
+const contextText = $('#context-text');
+const dropZone = $('#drop-zone');
+const fileChip = $('#file-chip');
+const fileName = $('#file-name');
+
+function saveIdeaContext() {
+  try {
+    const value = contextText.value;
+    if (value) localStorage.setItem(IDEA_CONTEXT_KEY, value);
+    else localStorage.removeItem(IDEA_CONTEXT_KEY);
+  } catch (_) { /* storage unavailable */ }
+}
+
+function loadIdeaContext() {
+  try {
+    const saved = localStorage.getItem(IDEA_CONTEXT_KEY);
+    if (typeof saved === 'string' && saved) contextText.value = saved;
+  } catch (_) { /* storage unavailable */ }
+}
+
+function clearIdeaContext() {
+  contextText.value = '';
+  fileChip.classList.add('hidden');
+  fileName.textContent = '';
+  try { localStorage.removeItem(IDEA_CONTEXT_KEY); } catch (_) { /* ignore */ }
+  contextText.focus();
+}
+
+function setContextFromFile(file) {
+  if (!file) return;
+  if (!/\.txt$/i.test(file.name) && file.type && !file.type.startsWith('text/')) {
+    toast('Please choose a .txt file.', 'error');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    contextText.value = String(reader.result || '');
+    saveIdeaContext();
+    fileName.textContent = file.name;
+    fileChip.classList.remove('hidden');
+    toast('Context loaded from ' + file.name, 'success');
+  };
+  reader.onerror = () => toast('Could not read file.', 'error');
+  reader.readAsText(file);
+}
+
+contextText.addEventListener('input', saveIdeaContext);
+
+$('#pick-file').addEventListener('click', () => $('#context-file').click());
+$('#context-file').addEventListener('change', (e) => {
+  setContextFromFile(e.target.files[0]);
+  e.target.value = '';
+});
+$('#clear-file').addEventListener('click', clearIdeaContext);
+$('#clear-context').addEventListener('click', clearIdeaContext);
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropZone.classList.add('dragover');
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  setContextFromFile(e.dataTransfer.files[0]);
+});
+
+loadIdeaContext();
+
+// ---------------------------------------------------------------------------
+// Idea generation (through the server, with the user's stored key)
+// ---------------------------------------------------------------------------
+const generateBtn = $('#generate-btn');
+
+async function generateIdeas() {
+  const model = $('#model').value.trim();
+  const context = contextText.value.trim();
+  const numIdeas = Math.min(Math.max(parseInt($('#num-ideas').value, 10) || 5, 1), 50);
+
+  if (!state.user) return showAuth();
+  if (!state.user.hasApiKey) {
+    toast('Save your DeepSeek API key in Settings first.', 'error');
+    switchTab('apis');
+    $('#api-key').focus();
+    return;
+  }
+  if (!model) return toast('Choose a model.', 'error');
+  if (!context) return toast('Provide context (upload or paste).', 'error');
+
+  generateBtn.disabled = true;
+  $('#generate-label').textContent = 'Generating…';
+  $('#generating').classList.remove('hidden');
+  $('#generating-text').textContent = `Generating ${numIdeas} ideas…`;
+  $('#gen-hint').textContent = 'Calling DeepSeek with your saved key — this can take a few seconds.';
+  const processId = startProcess('Generating ideas');
+
+  try {
+    const data = await api('/api/generate', {
+      method: 'POST',
+      body: { model, context, numIdeas },
+    });
+    state.ideas = data.ideas || [];
+    state.selected = new Set();
+    renderIdeas();
+    $('#gen-hint').textContent = `Generated ${state.ideas.length} idea(s).`;
+    if (state.ideas.length) toast(`Generated ${state.ideas.length} ideas.`, 'success');
+  } catch (err) {
+    $('#gen-hint').textContent = 'Generation failed.';
+    if (err.code === 'NO_API_KEY') {
+      state.user.hasApiKey = false;
+      renderKeyState();
+      $('#api-key').focus();
+    }
+    if (err.code === 'INVALID_API_KEY' || err.code === 'KEY_UNREADABLE') {
+      $('#api-key').focus();
+    }
+    toast(err.message || 'Something went wrong.', 'error');
+  } finally {
+    finishProcess(processId);
+    generateBtn.disabled = false;
+    $('#generate-label').textContent = '✨ Generate ideas';
+    $('#generating').classList.add('hidden');
+  }
+}
+
+generateBtn.addEventListener('click', generateIdeas);
+
+// ---------------------------------------------------------------------------
+// Render ideas
+// ---------------------------------------------------------------------------
+function renderIdeas() {
+  const list = $('#idea-list');
+  const empty = $('#ideas-empty');
+  const count = $('#idea-count');
+  count.textContent = state.ideas.length;
+  list.innerHTML = '';
+
+  if (!state.ideas.length) {
+    empty.classList.remove('hidden');
+    list.classList.add('hidden');
+  } else {
+    empty.classList.add('hidden');
+    list.classList.remove('hidden');
+  }
+
+  state.ideas.forEach((idea, idx) => {
+    const li = document.createElement('li');
+    li.className = 'idea-item' + (state.selected.has(idx) ? ' selected' : '');
+    li.innerHTML = `
+      <input type="checkbox" data-idx="${idx}" ${state.selected.has(idx) ? 'checked' : ''} />
+      <div class="idea-body">
+        <div class="idea-title"></div>
+        <div class="idea-desc"></div>
+      </div>`;
+    li.querySelector('.idea-title').textContent = idea.title;
+    li.querySelector('.idea-desc').textContent = idea.description || '';
+    li.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      const cb = li.querySelector('input[type="checkbox"]');
+      cb.checked = !cb.checked;
+      toggleSelection(idx, cb.checked);
+    });
+    li.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
+      toggleSelection(idx, e.target.checked);
+    });
+    list.appendChild(li);
+  });
+
+  updateBulkBar();
+}
+
+function toggleSelection(idx, checked) {
+  if (checked) state.selected.add(idx);
+  else state.selected.delete(idx);
+  const li = document.querySelector(`input[data-idx="${idx}"]`)?.closest('.idea-item');
+  if (li) li.classList.toggle('selected', checked);
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const bar = $('#bulk-bar');
+  const n = state.selected.size;
+  if (!state.ideas.length || !n) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+  $('#selected-count').textContent = n;
+}
+
+$('#select-all').addEventListener('click', () => {
+  if (!state.ideas.length) return;
+  state.ideas.forEach((_, i) => state.selected.add(i));
+  renderIdeas();
+});
+$('#select-none').addEventListener('click', () => {
+  state.selected.clear();
+  renderIdeas();
+});
+
+function selectedIdeas() {
+  return Array.from(state.selected)
+    .sort((a, b) => a - b)
+    .map((i) => state.ideas[i]);
+}
+
+$('#export-btn').addEventListener('click', () => {
+  const ideas = selectedIdeas();
+  if (!ideas.length) return toast('Select at least one idea.', 'error');
+  const text = ideas
+    .map((idea, i) => {
+      const lines = [`${i + 1}. ${idea.title}`];
+      if (idea.description) lines.push(`   ${idea.description}`);
+      return lines.join('\n');
+    })
+    .join('\n\n');
+  const stamp = new Date().toISOString().slice(0, 10);
+  downloadText(`ideas-${stamp}.txt`, text + '\n');
+  toast('Exported ' + ideas.length + ' idea(s).', 'success');
+});
+
+$('#import-btn').addEventListener('click', async () => {
+  const ideas = selectedIdeas();
+  if (!ideas.length) return toast('Select at least one idea.', 'error');
+
+  const button = $('#import-btn');
+  button.disabled = true;
+  let imported = 0;
+  try {
+    for (const idea of ideas) {
+      await api('/api/projects', {
+        method: 'POST',
+        body: {
+          title: idea.title,
+          idea: idea.description || '',
+          description: '',
+          stage: 'Idea Stage',
+          status: 'Not Started',
+          priority: 'Medium',
+          source: 'idea',
+        },
+      });
+      imported++;
+    }
+    await loadProjects();
+    state.selected.clear();
+    renderIdeas();
+    state.stageFilter = 'Idea Stage';
+    renderStageTabs();
+    switchTab('projects');
+    toast(`Imported ${imported} idea(s) into Project Management.`, 'success');
+  } catch (err) {
+    if (imported) await loadProjects();
+    toast(
+      imported
+        ? `Imported ${imported} of ${ideas.length}. ${err.message}`
+        : err.message || 'Could not import the ideas.',
+      'error'
+    );
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Project management (server database)
+// ---------------------------------------------------------------------------
+async function loadProjects() {
+  const { projects } = await api('/api/projects');
+  state.projects = Array.isArray(projects) ? projects : [];
+  renderProjects();
+}
+
+/**
+ * The pre-accounts version stored projects in localStorage. Move them into the
+ * signed-in account once, and only when the account has no projects yet.
+ */
+async function importLegacyProjects() {
+  const raw = localStorage.getItem('projectWorkflow.projects');
+  if (!raw) return;
+  if (localStorage.getItem('projectWorkflow.imported') === '1') return;
+
+  let items;
+  try {
+    items = JSON.parse(raw);
+  } catch (_) {
+    localStorage.removeItem('projectWorkflow.projects');
+    return;
+  }
+  if (!Array.isArray(items) || !items.length) {
+    localStorage.removeItem('projectWorkflow.projects');
+    return;
+  }
+  if (state.projects.length) return; // account already has data; keep the local copy
+
+  try {
+    const { imported } = await api('/api/projects/import', {
+      method: 'POST',
+      body: { projects: items.slice(0, 500) },
+    });
+    localStorage.setItem('projectWorkflow.imported', '1');
+    if (imported) {
+      await loadProjects();
+      toast(`Imported ${imported} project(s) from this browser.`, 'success');
+    }
+  } catch (err) {
+    if (err.status !== 401) toast(err.message || 'Could not import local projects.', 'error');
+  }
+}
+
+function updateBadge() {
+  $('#project-count-badge').textContent = state.projects.length;
+}
+
+function renderStageTabs() {
+  $$('.pm-stage-tab').forEach((tab) => {
+    const active = tab.dataset.stage === state.stageFilter;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+  });
+}
+
+function setStageFilter(stage) {
+  if (!PM_TABS.includes(stage)) return;
+  state.stageFilter = stage;
+  const filter = $('#pm-filter');
+  if (stage === 'Completed') {
+    filter.value = 'all';
+    filter.disabled = true;
+  } else {
+    filter.disabled = false;
+  }
+  renderStageTabs();
+  renderProjects();
+}
+
+$$('.pm-stage-tab').forEach((tab) => {
+  tab.addEventListener('click', () => setStageFilter(tab.dataset.stage));
+});
+
+function renderProjects() {
+  const query = ($('#pm-search').value || '').toLowerCase();
+  const filter = $('#pm-filter').value;
+
+  const stageProjects = state.projects.filter((p) => {
+    if (state.stageFilter === 'Completed') return p.status === 'Done';
+    return (p.stage || 'Idea Stage') === state.stageFilter && p.status !== 'Done';
+  });
+  let list = stageProjects.slice();
+  if (filter !== 'all') list = list.filter((p) => p.status === filter);
+  if (query) {
+    list = list.filter(
+      (p) =>
+        (p.title || '').toLowerCase().includes(query) ||
+        (p.idea || '').toLowerCase().includes(query) ||
+        (p.description || '').toLowerCase().includes(query) ||
+        (p.referenceMaterial || '').toLowerCase().includes(query) ||
+        (p.characterReferences || []).some((item) =>
+          `${item.name || ''} ${item.gender || ''} ${item.referenceMaterial || ''}`
+            .toLowerCase()
+            .includes(query)
+        )
+    );
+  }
+  list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  $('#pm-empty-text').textContent = stageProjects.length
+    ? 'No projects match the current search or status filter.'
+    : state.stageFilter === 'Completed'
+      ? 'No completed projects yet. Use the ✓ Complete button on a project to move it here.'
+      : `No projects in ${state.stageFilter} yet. Generate ideas and send them here, or create a project manually.`;
+
+  const wrap = $('#pm-list');
+  const empty = $('#pm-empty');
+  wrap.innerHTML = '';
+
+  if (!list.length) {
+    empty.classList.remove('hidden');
+    wrap.classList.add('hidden');
+  } else {
+    empty.classList.add('hidden');
+    wrap.classList.remove('hidden');
+  }
+
+  list.forEach((p) => wrap.appendChild(buildProjectCard(p)));
+  updateBadge();
+  renderSidebar();
+}
+
+function buildProjectCard(p) {
+  const card = document.createElement('article');
+  card.className = 'pm-card';
+
+  const top = document.createElement('div');
+  top.className = 'pm-card-top';
+  const title = document.createElement('h3');
+  title.className = 'pm-title';
+  title.textContent = p.title;
+  const actions = document.createElement('div');
+  actions.className = 'pm-card-actions';
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'btn btn-ghost btn-sm';
+  editBtn.textContent = '✎ Edit';
+  editBtn.addEventListener('click', () => openModal(p.id));
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn btn-danger btn-sm';
+  delBtn.textContent = '🗑';
+  delBtn.title = 'Delete';
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`Delete "${p.title}"?`)) return;
+    delBtn.disabled = true;
+    try {
+      await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
+      state.projects = state.projects.filter((x) => x.id !== p.id);
+      renderProjects();
+      toast('Project deleted.', 'success');
+    } catch (err) {
+      delBtn.disabled = false;
+      toast(err.message || 'Could not delete the project.', 'error');
+    }
+  });
+
+  const moveBtn = document.createElement('button');
+  moveBtn.className = 'btn btn-secondary btn-sm';
+  moveBtn.textContent = '→ Generation';
+  moveBtn.title = (p.referenceMaterial || '').trim()
+    ? 'Move this project to Generation Stage'
+    : 'Generate and save reference material first';
+  moveBtn.disabled = !(p.referenceMaterial || '').trim();
+  moveBtn.addEventListener('click', async () => {
+    if (!confirm(`Move "${p.title}" to Generation Stage?`)) return;
+    moveBtn.disabled = true;
+    try {
+      const { project } = await api(`/api/projects/${encodeURIComponent(p.id)}`, {
+        method: 'PUT',
+        body: { stage: 'Generation Stage' },
+      });
+      Object.assign(p, project);
+      setStageFilter('Generation Stage');
+      toast('Project moved to Generation Stage.', 'success');
+    } catch (err) {
+      moveBtn.disabled = false;
+      toast(err.message || 'Could not move the project.', 'error');
+    }
+  });
+
+  const completeBtn = document.createElement('button');
+  const isDone = p.status === 'Done';
+  completeBtn.className = isDone ? 'btn btn-secondary btn-sm' : 'btn btn-primary btn-sm';
+  completeBtn.textContent = isDone ? '↩ Reopen' : '✓ Complete';
+  completeBtn.title = isDone ? 'Move back to its project stage' : 'Mark this project complete';
+  completeBtn.addEventListener('click', async () => {
+    const nextStatus = isDone ? 'In Progress' : 'Done';
+    completeBtn.disabled = true;
+    try {
+      const { project } = await api(`/api/projects/${encodeURIComponent(p.id)}`, {
+        method: 'PUT',
+        body: { status: nextStatus },
+      });
+      Object.assign(p, project);
+      setStageFilter(nextStatus === 'Done' ? 'Completed' : (project.stage || 'Idea Stage'));
+      toast(nextStatus === 'Done' ? 'Project completed.' : 'Project reopened.', 'success');
+    } catch (err) {
+      completeBtn.disabled = false;
+      toast(err.message || 'Could not update the project.', 'error');
+    }
+  });
+
+  const episodesBtn = document.createElement('button');
+  episodesBtn.className = 'btn btn-ghost btn-sm';
+  episodesBtn.textContent = 'Episodes';
+  episodesBtn.addEventListener('click', () => openEpisodesModal(p));
+
+  actions.append(editBtn);
+  if (p.stage === 'Reference Stage') actions.append(moveBtn);
+  actions.append(episodesBtn, completeBtn, delBtn);
+  top.append(title, actions);
+
+  const idea = (p.idea || '').trim();
+  const description = (p.description || '').trim();
+
+  const ideaBlock = document.createElement('div');
+  ideaBlock.className = 'pm-idea';
+  const ideaLabel = document.createElement('span');
+  ideaLabel.className = 'pm-idea-label';
+  ideaLabel.textContent = 'Idea';
+  const ideaText = document.createElement('p');
+  ideaText.className = 'pm-idea-text';
+  ideaText.textContent = idea;
+
+  const descBlock = document.createElement('div');
+  const descLabel = document.createElement('span');
+  descLabel.className = 'pm-desc-label';
+  descLabel.textContent = 'Description';
+  const desc = document.createElement('p');
+  desc.className = 'pm-desc';
+  desc.textContent = description || 'No description.';
+
+  const meta = document.createElement('div');
+  meta.className = 'pm-meta';
+
+  const stageSelect = document.createElement('select');
+  PROJECT_STAGES.forEach((s) => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    opt.selected = s === (p.stage || 'Idea Stage');
+    stageSelect.appendChild(opt);
+  });
+  stageSelect.addEventListener('change', async () => {
+    const previous = p.stage;
+    stageSelect.disabled = true;
+    try {
+      const { project } = await api(`/api/projects/${encodeURIComponent(p.id)}`, {
+        method: 'PUT',
+        body: { stage: stageSelect.value },
+      });
+      Object.assign(p, project);
+    } catch (err) {
+      stageSelect.value = previous;
+      toast(err.message || 'Could not update the stage.', 'error');
+    } finally {
+      stageSelect.disabled = false;
+      renderProjects();
+    }
+  });
+
+  const statusSelect = document.createElement('select');
+  PROJECT_STATUSES.forEach((s) => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    opt.selected = s === (p.status || 'Not Started');
+    statusSelect.appendChild(opt);
+  });
+  statusSelect.addEventListener('change', async () => {
+    const previous = p.status;
+    statusSelect.disabled = true;
+    try {
+      const { project } = await api(`/api/projects/${encodeURIComponent(p.id)}`, {
+        method: 'PUT',
+        body: { status: statusSelect.value },
+      });
+      Object.assign(p, project);
+      if (project.status === 'Done') setStageFilter('Completed');
+      else if (state.stageFilter === 'Completed') setStageFilter(project.stage || 'Idea Stage');
+      else renderProjects();
+    } catch (err) {
+      statusSelect.value = previous;
+      toast(err.message || 'Could not update the status.', 'error');
+    } finally {
+      statusSelect.disabled = false;
+      renderProjects();
+    }
+  });
+
+  const prioritySelect = document.createElement('select');
+  ['Low', 'Medium', 'High'].forEach((s) => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    opt.selected = s === p.priority;
+    prioritySelect.appendChild(opt);
+  });
+  prioritySelect.addEventListener('change', async () => {
+    const previous = p.priority;
+    prioritySelect.disabled = true;
+    try {
+      const { project } = await api(`/api/projects/${encodeURIComponent(p.id)}`, {
+        method: 'PUT',
+        body: { priority: prioritySelect.value },
+      });
+      Object.assign(p, project);
+    } catch (err) {
+      prioritySelect.value = previous;
+      toast(err.message || 'Could not update the priority.', 'error');
+    } finally {
+      prioritySelect.disabled = false;
+      renderProjects();
+    }
+  });
+
+  const date = document.createElement('span');
+  date.className = 'pm-date';
+  date.textContent = new Date(p.createdAt).toLocaleString();
+
+  meta.append(stageSelect, statusSelect, prioritySelect, date);
+
+  card.append(top);
+  if (idea) {
+    ideaBlock.append(ideaLabel, ideaText);
+    card.append(ideaBlock);
+  }
+  if (description || !idea) {
+    descBlock.append(descLabel, desc);
+    card.append(descBlock);
+  }
+  if (p.referenceMaterial) {
+    const details = document.createElement('details');
+    details.className = 'pm-reference';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Reference Material';
+    const text = document.createElement('pre');
+    text.className = 'pm-reference-text';
+    text.textContent = p.referenceMaterial;
+    details.append(summary, text);
+    card.append(details);
+  }
+  if (Array.isArray(p.characterReferences) && p.characterReferences.length) {
+    const details = document.createElement('details');
+    details.className = 'pm-reference';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Character Reference Material';
+
+    const list = document.createElement('div');
+    list.className = 'pm-character-refs';
+    p.characterReferences.forEach((item) => {
+      const block = document.createElement('div');
+      block.className = 'pm-character-ref';
+      const heading = document.createElement('div');
+      heading.className = 'pm-character-ref-head';
+      heading.textContent = `${item.name || 'Character'}${item.gender ? ' · ' + item.gender : ''}`;
+      const body = document.createElement('p');
+      body.className = 'pm-character-ref-text';
+      body.textContent = item.referenceMaterial || '';
+      block.append(heading, body);
+      list.appendChild(block);
+    });
+
+    details.append(summary, list);
+    card.append(details);
+  }
+  if (Array.isArray(p.sceneImages) && p.sceneImages.length) {
+    const gallery = document.createElement('div');
+    gallery.className = 'pm-images';
+    p.sceneImages.forEach((image) => {
+      const scene = (p.scenes || []).find((item) => item.id === image.sceneId);
+      const link = document.createElement('a');
+      link.className = 'pm-image';
+      link.href = `/api/image/${encodeURIComponent(p.id)}/${encodeURIComponent(image.file)}`;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.title = scene ? scene.title : 'Scene image';
+      const img = document.createElement('img');
+      img.src = link.href;
+      img.alt = scene ? `${scene.title} image` : 'Scene image';
+      img.loading = 'lazy';
+      link.appendChild(img);
+      gallery.appendChild(link);
+    });
+    card.append(gallery);
+  }
+  card.append(meta);
+  return card;
+}
+
+// ---------------------------------------------------------------------------
+// Reference Stage workspace
+// ---------------------------------------------------------------------------
+function referenceProjects() {
+  return state.projects
+    .filter((p) => (p.stage || 'Idea Stage') === 'Reference Stage' && p.status !== 'Done')
+    .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+}
+
+function setReferenceButtons(enabled) {
+  $('#ref-save').disabled = !enabled;
+  $('#ref-regenerate').disabled = !enabled;
+  $('#ref-use-guide').disabled = !enabled;
+}
+
+function renderReferenceCharacterMaterial(references) {
+  const wrap = $('#ref-character-refs');
+  const list = $('#ref-character-ref-list');
+  list.innerHTML = '';
+
+  const items = Array.isArray(references)
+    ? references.filter((item) => item && item.referenceMaterial)
+    : [];
+
+  if (!items.length) {
+    wrap.classList.add('hidden');
+    return;
+  }
+
+  items.forEach((item) => {
+    const card = document.createElement('article');
+    card.className = 'character-ref-card';
+
+    const head = document.createElement('div');
+    head.className = 'character-ref-head';
+
+    const name = document.createElement('strong');
+    name.textContent = item.name || 'Character';
+
+    const gender = document.createElement('span');
+    gender.className = 'character-ref-gender';
+    gender.textContent = item.gender || '';
+
+    const text = document.createElement('p');
+    text.className = 'character-ref-text';
+    text.textContent = item.referenceMaterial;
+
+    head.append(name, gender);
+    card.append(head, text);
+    list.appendChild(card);
+  });
+
+  wrap.classList.remove('hidden');
+}
+
+function setReferenceOutput(text, hasProject = Boolean(state.reference.projectId)) {
+  const output = $('#ref-output');
+  const empty = $('#ref-empty');
+  output.value = text || '';
+  if (hasProject) {
+    output.classList.remove('hidden');
+    empty.classList.add('hidden');
+    output.scrollTop = 0;
+  } else {
+    output.classList.add('hidden');
+    empty.classList.remove('hidden');
+  }
+}
+
+function selectReferenceProject(id) {
+  const project = state.projects.find((p) => p.id === id) || null;
+  state.reference.projectId = project ? project.id : null;
+  state.reference.dirty = false;
+  $('#ref-context').value = project ? project.idea || '' : '';
+  setReferenceOutput(project ? project.referenceMaterial || '' : '', Boolean(project));
+  renderReferenceCharacterMaterial(project ? project.characterReferences : []);
+  setReferenceButtons(Boolean(project));
+  $('#ref-project-hint').textContent = project
+    ? `Idea loaded from "${project.title}".`
+    : 'Choose a project to load its idea as context.';
+}
+
+function renderReferenceProjects() {
+  const select = $('#ref-project');
+  const projects = referenceProjects();
+  const previous = state.reference.projectId;
+  select.innerHTML = '';
+
+  if (!projects.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No Reference Stage projects';
+    select.appendChild(option);
+    select.disabled = true;
+    select.value = '';
+    $('#ref-open-projects').classList.remove('hidden');
+    $('#ref-project-hint').textContent =
+      'No projects in Reference Stage yet. Move a project there from Project Management.';
+    state.reference.projectId = null;
+    state.reference.dirty = false;
+    $('#ref-context').value = '';
+    setReferenceOutput('', false);
+    renderReferenceCharacterMaterial([]);
+    setReferenceButtons(false);
+    return;
+  }
+
+  select.disabled = false;
+  projects.forEach((project) => {
+    const option = document.createElement('option');
+    option.value = project.id;
+    option.textContent = project.title;
+    select.appendChild(option);
+  });
+  $('#ref-open-projects').classList.add('hidden');
+
+  const next = projects.some((p) => p.id === previous) ? previous : projects[0].id;
+  select.value = next;
+  if (next !== previous) {
+    selectReferenceProject(next);
+  } else {
+    const project = projects.find((p) => p.id === next);
+    if (!state.reference.dirty) {
+      setReferenceOutput(project ? project.referenceMaterial || '' : '', Boolean(project));
+    }
+    $('#ref-context').value = project ? project.idea || '' : '';
+    $('#ref-project-hint').textContent = project
+      ? `Idea loaded from "${project.title}".`
+      : 'Choose a project to load its idea as context.';
+    renderReferenceCharacterMaterial(project ? project.characterReferences : []);
+    setReferenceButtons(Boolean(project));
+  }
+}
+
+function renderCharacterFields() {
+  const wrap = $('#ref-characters');
+  wrap.innerHTML = '';
+
+  state.reference.characters.slice(0, state.reference.count).forEach((character, index) => {
+    const block = document.createElement('div');
+    block.className = 'ref-character';
+    block.innerHTML = `
+      <div class="ref-character-head">Character ${index + 1}</div>
+      <div class="ref-character-row">
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input type="text" data-field="name" maxlength="120" placeholder="Character name" />
+        </label>
+        <label class="field">
+          <span class="field-label">Gender</span>
+          <select data-field="gender">
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+          </select>
+        </label>
+      </div>`;
+
+    block.querySelector('[data-field="name"]').value = character.name;
+
+    const genderSelect = block.querySelector('[data-field="gender"]');
+    genderSelect.value = character.gender === 'Female' ? 'Female' : 'Male';
+
+    block.querySelectorAll('[data-field]').forEach((input) => {
+      const eventName = input.tagName === 'SELECT' ? 'change' : 'input';
+      input.addEventListener(eventName, () => {
+        character[input.dataset.field] = input.value;
+      });
+    });
+
+    wrap.appendChild(block);
+  });
+}
+
+async function generateReference(replaceWorkspace = false) {
+  const projectId = state.reference.projectId;
+  if (!projectId) return toast('Select a Reference Stage project first.', 'error');
+  if (!state.user) return showAuth();
+  if (!state.user.hasApiKey) {
+    toast('Save your DeepSeek API key in Settings first.', 'error');
+    switchTab('apis');
+    return;
+  }
+
+  const model = $('#ref-model').value.trim();
+  if (!model) return toast('Choose a model.', 'error');
+
+  const context = $('#ref-context').value.trim();
+  const setting = $('#ref-setting').value.trim();
+  const characters = state.reference.characters
+    .slice(0, state.reference.count)
+    .map((c) => ({ ...c }));
+
+  if (characters.some((character) => !character.name.trim())) {
+    return toast('Enter a name for each character.', 'error');
+  }
+
+  const project = state.projects.find((p) => p.id === projectId);
+  const savedReference = (project && project.referenceMaterial ? project.referenceMaterial : '').trim();
+  const editedReference = $('#ref-output').value.trim();
+  if ((savedReference || editedReference) && !replaceWorkspace) {
+    const replace = confirm(
+      'Replace the saved reference material, scene outline, character references, and structured Story Workspace drafts with a new generation? Unsaved edits will be lost.'
+    );
+    if (!replace) return;
+  }
+
+  const button = $('#ref-generate');
+  button.disabled = true;
+  setReferenceButtons(false);
+  $('#ref-generate-label').textContent = 'Generating…';
+  $('#ref-generating').classList.remove('hidden');
+  $('#ref-hint').textContent = 'Calling DeepSeek with your saved key — this can take a few seconds.';
+  const processId = startProcess('Generating reference material');
+  let retryReplaceWorkspace = false;
+
+  try {
+    const data = await api('/api/reference', {
+      method: 'POST',
+      body: { projectId, context, setting, characters, model, replaceWorkspace },
+    });
+
+    const updated = data.project;
+    const index = state.projects.findIndex((p) => p.id === updated.id);
+    if (index >= 0) state.projects[index] = updated;
+    if (state.generation.projectId === updated.id) {
+      state.generation.projectId = null;
+      state.generation.scenes = [];
+      state.generation.prompts = [];
+      state.generation.images = [];
+    }
+
+    state.stageFilter = 'Reference Stage';
+    renderStageTabs();
+    setReferenceOutput(data.referenceMaterial || '', true);
+    renderReferenceCharacterMaterial(data.characterReferences || updated.characterReferences || []);
+    setReferenceButtons(true);
+    state.reference.dirty = false;
+    refreshSidebarStory(true);
+    const fallbackNote = data.fallback ? ` (${data.model} fallback)` : '';
+    const workspaceNote = data.workspace && data.workspace.imported
+      ? ' Structured Story Workspace drafts were generated as reviewable drafts — open the Story workspace to review and approve.'
+      : '';
+    $('#ref-hint').textContent = `Reference material saved to "${updated.title}"${fallbackNote}.${workspaceNote}`;
+    toast(
+      data.fallback
+        ? `Generated with ${data.model} fallback and saved.${workspaceNote}`
+        : `Reference material and structured Story Workspace drafts generated and saved.${workspaceNote}`,
+      'success'
+    );
+  } catch (err) {
+    if (err.code === 'WORKSPACE_REPLACE_REQUIRED') {
+      const replace = confirm(
+        'Structured Story Workspace records already exist for this project. Replace them — including any edits or approvals — with the new generation?'
+      );
+      if (replace) retryReplaceWorkspace = true;
+      else {
+        $('#ref-hint').textContent = 'Reference generation cancelled. Existing structured records were kept.';
+      }
+    } else {
+      $('#ref-hint').textContent = 'Reference generation failed.';
+      if (err.code === 'NO_API_KEY') {
+        state.user.hasApiKey = false;
+        renderKeyState();
+      }
+      toast(err.message || 'Something went wrong.', 'error');
+    }
+  } finally {
+    finishProcess(processId);
+    button.disabled = false;
+    setReferenceButtons(Boolean(state.reference.projectId));
+    $('#ref-generate-label').textContent = '✨ Generate reference material';
+    $('#ref-generating').classList.add('hidden');
+  }
+
+  if (retryReplaceWorkspace) return generateReference(true);
+}
+
+async function saveReferenceMaterial() {
+  const projectId = state.reference.projectId;
+  if (!projectId) return toast('Select a Reference Stage project first.', 'error');
+
+  const button = $('#ref-save');
+  button.disabled = true;
+  try {
+    const { project } = await api(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PUT',
+      body: { referenceMaterial: $('#ref-output').value },
+    });
+    const index = state.projects.findIndex((p) => p.id === project.id);
+    if (index >= 0) state.projects[index] = project;
+    setReferenceOutput(project.referenceMaterial || '', true);
+    renderReferenceCharacterMaterial(project.characterReferences || []);
+    setReferenceButtons(true);
+    state.reference.dirty = false;
+    $('#ref-hint').textContent = `Reference material saved to "${project.title}".`;
+    toast('Reference material saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the reference material.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('#ref-project').addEventListener('change', (event) => {
+  if (event.target.value) selectReferenceProject(event.target.value);
+});
+
+$('#ref-character-count').addEventListener('change', (event) => {
+  state.reference.count = Number(event.target.value) || 1;
+  renderCharacterFields();
+});
+
+$('#ref-open-projects').addEventListener('click', () => {
+  setStageFilter('Reference Stage');
+  switchTab('projects');
+});
+
+$('#ref-generate').addEventListener('click', () => generateReference(false));
+$('#ref-save').addEventListener('click', saveReferenceMaterial);
+$('#ref-regenerate').addEventListener('click', () => generateReference(false));
+$('#ref-use-guide').addEventListener('click', () => {
+  if (!state.reference.projectId) {
+    toast('Select a Reference Stage project first.', 'error');
+    return;
+  }
+  if (state.chat.busy) {
+    toast('The Guide is still replying. Try again in a moment.', 'error');
+    return;
+  }
+  sendChat({
+    prompt: 'Create setting for the current reference project',
+    projectId: state.reference.projectId,
+    mode: 'guide',
+  });
+});
+$('#ref-output').addEventListener('input', () => {
+  if (state.reference.projectId) {
+    state.reference.dirty = true;
+    $('#ref-hint').textContent = 'Unsaved reference edits. Click Save reference to keep them.';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Generation Stage workspace
+// ---------------------------------------------------------------------------
+function generationProjects() {
+  return state.projects
+    .filter((p) => (p.stage || 'Idea Stage') === 'Generation Stage' && p.status !== 'Done')
+    .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function newSceneId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  return 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function setGenerationButtons(enabled) {
+  $('#gen-add-scene').disabled = !enabled;
+  $('#gen-save-scenes').disabled = !enabled;
+  $('#gen-generate-prompts').disabled = !enabled;
+}
+
+function selectGenerationProject(id) {
+  const project = state.projects.find((p) => p.id === id) || null;
+  state.generation.projectId = project ? project.id : null;
+
+  $('#gen-idea').value = project ? project.idea || '' : '';
+  $('#gen-reference').value = project ? project.referenceMaterial || '' : '';
+  state.generation.scenes = project ? cloneJson(project.scenes || []) : [];
+  state.generation.prompts = project ? cloneJson(project.generationPrompts || []) : [];
+  state.generation.images = project ? cloneJson(project.sceneImages || []) : [];
+
+  if (project) {
+    const refNote = (project.referenceMaterial || '').trim()
+      ? ''
+      : ' No reference material saved; generate it in Reference Stage first.';
+    $('#gen-project-hint').textContent = `Loaded "${project.title}".${refNote}`;
+  } else {
+    $('#gen-project-hint').textContent =
+      'Choose a project to load its idea, reference material, and scene outline.';
+  }
+
+  setGenerationButtons(Boolean(project));
+  renderGenerationScenes();
+  renderGenerationPrompts();
+  loadGenerationCharacterSheets(project ? project.id : '');
+}
+
+function renderGenerationCharacterSheets() {
+  const wrap = $('#gen-character-sheets');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const sheets = state.generation.characterSheets || [];
+  if (!sheets.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'No character sheets yet. Generate them in Story Workspace.';
+    wrap.appendChild(empty);
+    return;
+  }
+  sheets.forEach((sheet) => {
+    const character = (state.generation.characters || []).find((item) => item.id === sheet.characterId);
+    const figure = document.createElement('figure');
+    figure.className = 'gen-character-sheet';
+    const img = document.createElement('img');
+    img.src = `/api/story/sheet-image/${encodeURIComponent(state.generation.projectId)}/${encodeURIComponent(sheet.file)}`;
+    img.alt = `${character ? character.name + ' ' : ''}character sheet v${sheet.version}`;
+    img.loading = 'lazy';
+    const caption = document.createElement('figcaption');
+    caption.textContent = `${character ? character.name : 'Character'} · v${sheet.version}${sheet.status === 'final' ? ' · final' : ''}`;
+    figure.append(img, caption);
+    wrap.appendChild(figure);
+  });
+}
+
+async function loadGenerationCharacterSheets(projectId) {
+  if (!projectId) {
+    state.generation.characters = [];
+    state.generation.characterSheets = [];
+    renderGenerationCharacterSheets();
+    return;
+  }
+  try {
+    const { story } = await api(`/api/story/${encodeURIComponent(projectId)}`);
+    if (state.generation.projectId !== projectId) return;
+    state.generation.characters = story.characters || [];
+    state.generation.characterSheets = story.characterSheets || [];
+  } catch (_) {
+    state.generation.characters = [];
+    state.generation.characterSheets = [];
+  }
+  if (state.generation.projectId === projectId) renderGenerationCharacterSheets();
+}
+
+function renderGenerationProjects() {
+  const select = $('#gen-project');
+  const projects = generationProjects();
+  const previous = state.generation.projectId;
+  select.innerHTML = '';
+
+  if (!projects.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No Generation Stage projects';
+    select.appendChild(option);
+    select.disabled = true;
+    select.value = '';
+    $('#gen-open-projects').classList.remove('hidden');
+    $('#gen-project-hint').textContent =
+      'No projects in Generation Stage yet. Add reference material and move a project here.';
+    state.generation.projectId = null;
+    $('#gen-idea').value = '';
+    $('#gen-reference').value = '';
+    state.generation.scenes = [];
+    state.generation.prompts = [];
+    state.generation.images = [];
+    state.generation.characters = [];
+    state.generation.characterSheets = [];
+    setGenerationButtons(false);
+    renderGenerationScenes();
+    renderGenerationPrompts();
+    renderGenerationCharacterSheets();
+    return;
+  }
+
+  select.disabled = false;
+  projects.forEach((project) => {
+    const option = document.createElement('option');
+    option.value = project.id;
+    option.textContent = project.title;
+    select.appendChild(option);
+  });
+  $('#gen-open-projects').classList.add('hidden');
+
+  const next = projects.some((p) => p.id === previous) ? previous : projects[0].id;
+  select.value = next;
+  if (next !== previous) {
+    selectGenerationProject(next);
+  } else {
+    const project = projects.find((p) => p.id === next);
+    $('#gen-idea').value = project ? project.idea || '' : '';
+    $('#gen-reference').value = project ? project.referenceMaterial || '' : '';
+    state.generation.images = project ? cloneJson(project.sceneImages || []) : [];
+    setGenerationButtons(Boolean(project));
+    loadGenerationCharacterSheets(project ? project.id : '');
+  }
+}
+
+function renderGenerationScenes() {
+  const wrap = $('#gen-scenes');
+  wrap.innerHTML = '';
+
+  if (!state.generation.scenes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'gen-empty';
+    empty.textContent = 'No scene outline saved. Regenerate the reference material, or add scenes manually.';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  state.generation.scenes.forEach((scene, index) => {
+    const card = document.createElement('div');
+    card.className = 'gen-scene-card';
+    card.innerHTML = `
+      <div class="gen-scene-head">
+        <span class="gen-scene-title">Scene ${index + 1}</span>
+        <button class="btn btn-danger btn-sm" type="button" data-action="remove">🗑</button>
+      </div>
+      <label class="field">
+        <span class="field-label">Title</span>
+        <input type="text" data-field="title" maxlength="200" />
+      </label>
+      <label class="field">
+        <span class="field-label">Action</span>
+        <textarea data-field="action" rows="2" maxlength="5000"></textarea>
+      </label>
+      <div class="gen-scene-grid">
+        <label class="field">
+          <span class="field-label">Location</span>
+          <input type="text" data-field="location" maxlength="200" />
+        </label>
+        <label class="field">
+          <span class="field-label">Characters (comma separated)</span>
+          <input type="text" data-field="characters" maxlength="1000" />
+        </label>
+      </div>`;
+
+    card.querySelector('[data-field="title"]').value = scene.title || '';
+    card.querySelector('[data-field="action"]').value = scene.action || '';
+    card.querySelector('[data-field="location"]').value = scene.location || '';
+    card.querySelector('[data-field="characters"]').value = (scene.characters || []).join(', ');
+
+    card.querySelectorAll('[data-field]').forEach((input) => {
+      input.addEventListener('input', () => {
+        if (input.dataset.field === 'characters') {
+          scene.characters = input.value
+            .split(',')
+            .map((name) => name.trim())
+            .filter(Boolean)
+            .slice(0, 12);
+          scene.characterIds = [];
+        } else if (input.dataset.field === 'location') {
+          scene.location = input.value;
+          scene.locationId = '';
+        } else {
+          scene[input.dataset.field] = input.value;
+        }
+      });
+    });
+
+    card.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      if (!confirm('Remove this scene?')) return;
+      state.generation.scenes.splice(index, 1);
+      state.generation.prompts = state.generation.prompts.filter((p) => p.sceneId !== scene.id);
+      $('#gen-scene-hint').textContent = 'Scene removed. Save the outline to persist the change.';
+      renderGenerationScenes();
+      renderGenerationPrompts();
+    });
+
+    wrap.appendChild(card);
+  });
+}
+
+function orderedGenerationPrompts() {
+  const byScene = new Map(state.generation.prompts.map((item) => [item.sceneId, item]));
+  return state.generation.scenes.map((scene) => byScene.get(scene.id)).filter(Boolean);
+}
+
+function updateGenerateNextImageButton() {
+  const button = $('#gen-generate-next-image');
+  if (!button) return;
+  const scenes = state.generation.scenes || [];
+  const prompts = orderedGenerationPrompts();
+  const allPrompted = scenes.length > 0 && scenes.every((scene) => {
+    const entry = prompts.find((prompt) => prompt.sceneId === scene.id);
+    return Boolean(entry && (entry.prompt || '').trim());
+  });
+  const nextScene = scenes.find((scene) => !(state.generation.images || []).some((image) => image.sceneId === scene.id));
+
+  if (!scenes.length) {
+    button.disabled = true;
+    button.textContent = '🖼 Generate next image';
+    button.title = 'Add scenes first.';
+  } else if (!allPrompted) {
+    button.disabled = true;
+    button.textContent = '🖼 Generate next image';
+    button.title = 'Generate prompts for every scene first.';
+  } else if (!nextScene) {
+    button.disabled = true;
+    button.textContent = '✓ All images generated';
+    button.title = 'Every scene already has an image.';
+  } else {
+    button.disabled = false;
+    button.textContent = '🖼 Generate next image';
+    button.title = `Generate the image for "${nextScene.title || 'next scene'}".`;
+  }
+}
+
+function renderGenerationPrompts() {
+  updateGenerateNextImageButton();
+  const wrap = $('#gen-prompts');
+  wrap.innerHTML = '';
+
+  if (!state.generation.scenes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'gen-empty';
+    empty.textContent = 'Add or load scenes before generating prompts.';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  if (!state.generation.prompts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'gen-empty';
+    empty.textContent = 'No scene prompts generated yet. Click Generate Scene Prompts.';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  state.generation.scenes.forEach((scene, index) => {
+    const entry = state.generation.prompts.find((item) => item.sceneId === scene.id);
+    if (!entry) return;
+
+    const card = document.createElement('div');
+    card.className = 'gen-prompt-card';
+    card.innerHTML = `
+      <div class="gen-prompt-head">
+        <span class="gen-scene-title">Scene ${index + 1}</span>
+      </div>
+      <textarea class="gen-prompt-text" maxlength="30000"></textarea>
+      <div class="gen-image-wrap"></div>
+      <div class="gen-prompt-actions">
+        <button class="btn btn-secondary btn-sm" type="button" data-action="save">💾 Save</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="copy">Copy</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="regen">↻ Regenerate</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="upload">⬆ Upload image</button>
+        <button class="btn btn-primary btn-sm" type="button" data-action="image">🖼 Generate image</button>
+      </div>`;
+
+    card.querySelector('.gen-scene-title').textContent = `Scene ${index + 1} · ${scene.title}`;
+    const textarea = card.querySelector('.gen-prompt-text');
+    textarea.value = entry.prompt;
+    textarea.addEventListener('input', () => {
+      entry.prompt = textarea.value;
+    });
+
+    const existingImage = state.generation.images.find((item) => item.sceneId === scene.id);
+    const imageButton = card.querySelector('[data-action="image"]');
+    const uploadButton = card.querySelector('[data-action="upload"]');
+    const uploadInput = document.createElement('input');
+    uploadInput.type = 'file';
+    uploadInput.accept = 'image/png,image/jpeg,image/webp';
+    uploadInput.hidden = true;
+    card.appendChild(uploadInput);
+
+    uploadButton.addEventListener('click', () => uploadInput.click());
+    uploadInput.addEventListener('change', () => {
+      const file = uploadInput.files && uploadInput.files[0];
+      uploadInput.value = '';
+      if (file) uploadSceneImage(scene, file, uploadButton);
+    });
+
+    if (existingImage) {
+      imageButton.textContent = '↻ Regenerate image';
+
+      const figure = document.createElement('figure');
+      figure.className = 'gen-image';
+      const img = document.createElement('img');
+      img.src = `/api/image/${encodeURIComponent(state.generation.projectId)}/${encodeURIComponent(existingImage.file)}`;
+      img.alt = `Scene ${index + 1}`;
+      img.loading = 'lazy';
+
+      const caption = document.createElement('figcaption');
+      const download = document.createElement('a');
+      download.className = 'btn btn-ghost btn-sm';
+      download.href = img.src;
+      download.download = `scene-${index + 1}.${existingImage.file.split('.').pop() || 'png'}`;
+      download.textContent = '⬇ Download image';
+      caption.appendChild(download);
+
+      figure.append(img, caption);
+      card.querySelector('.gen-image-wrap').appendChild(figure);
+    }
+
+    card.querySelector('[data-action="save"]').addEventListener('click', () => {
+      saveGenerationPrompts();
+    });
+    card.querySelector('[data-action="copy"]').addEventListener('click', () => {
+      copyToClipboard(entry.prompt);
+    });
+    card.querySelector('[data-action="regen"]').addEventListener('click', (event) => {
+      regenerateScenePrompt(scene, event.currentTarget);
+    });
+    imageButton.addEventListener('click', () => {
+      generateSceneImage(scene, entry, imageButton);
+    });
+
+    wrap.appendChild(card);
+  });
+}
+
+async function copyToClipboard(text) {
+  if (!text || !text.trim()) return toast('Nothing to copy.', 'error');
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      toast('Prompt copied.', 'success');
+      return;
+    }
+    throw new Error('Clipboard API unavailable');
+  } catch (_) {
+    const temp = document.createElement('textarea');
+    temp.value = text;
+    temp.style.position = 'fixed';
+    temp.style.left = '-9999px';
+    document.body.appendChild(temp);
+    temp.select();
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (_) {
+      copied = false;
+    }
+    temp.remove();
+    toast(copied ? 'Prompt copied.' : 'Could not copy the prompt.', copied ? 'success' : 'error');
+  }
+}
+
+async function saveGenerationScenes() {
+  const projectId = state.generation.projectId;
+  if (!projectId) return toast('Select a Generation Stage project first.', 'error');
+
+  const button = $('#gen-save-scenes');
+  button.disabled = true;
+  try {
+    const { project } = await api(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PUT',
+      body: { scenes: state.generation.scenes },
+    });
+    const index = state.projects.findIndex((p) => p.id === project.id);
+    if (index >= 0) state.projects[index] = project;
+    state.generation.scenes = cloneJson(project.scenes || []);
+    state.generation.prompts = cloneJson(project.generationPrompts || []);
+    state.generation.images = cloneJson(project.sceneImages || []);
+    renderGenerationScenes();
+    renderGenerationPrompts();
+    $('#gen-scene-hint').textContent = 'Scene outline saved.';
+    toast('Scene outline saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the scene outline.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function saveGenerationPrompts() {
+  const projectId = state.generation.projectId;
+  if (!projectId) return toast('Select a Generation Stage project first.', 'error');
+
+  const prompts = orderedGenerationPrompts().filter((item) => item.prompt.trim());
+  try {
+    const { project } = await api(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PUT',
+      body: { scenes: state.generation.scenes, generationPrompts: prompts },
+    });
+    const index = state.projects.findIndex((p) => p.id === project.id);
+    if (index >= 0) state.projects[index] = project;
+    state.generation.scenes = cloneJson(project.scenes || []);
+    state.generation.prompts = cloneJson(project.generationPrompts || []);
+    state.generation.images = cloneJson(project.sceneImages || []);
+    renderGenerationPrompts();
+    $('#gen-prompt-hint').textContent = 'Scene prompts saved.';
+    toast('Scene prompts saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the scene prompts.', 'error');
+  }
+}
+
+async function generateGenerationPrompts() {
+  const projectId = state.generation.projectId;
+  if (!projectId) return toast('Select a Generation Stage project first.', 'error');
+  if (!state.user) return showAuth();
+  if (!state.user.hasApiKey) {
+    toast('Save your DeepSeek API key in Settings first.', 'error');
+    switchTab('apis');
+    return;
+  }
+  if (!state.generation.scenes.length) {
+    return toast('Add or load at least one scene first.', 'error');
+  }
+  if (!$('#gen-reference').value.trim()) {
+    return toast('This project has no reference material. Generate it in Reference Stage first.', 'error');
+  }
+
+  const model = $('#gen-model').value.trim();
+  if (!model) return toast('Choose a model.', 'error');
+
+  const button = $('#gen-generate-prompts');
+  button.disabled = true;
+  $('#gen-prompt-hint').textContent = 'Generating one photorealistic prompt per scene…';
+  const processId = startProcess('Generating scene prompts');
+
+  try {
+    const data = await api('/api/generation/prompts', {
+      method: 'POST',
+      body: { projectId, model, scenes: state.generation.scenes },
+    });
+    const updated = data.project;
+    const index = state.projects.findIndex((p) => p.id === updated.id);
+    if (index >= 0) state.projects[index] = updated;
+    state.generation.scenes = cloneJson(updated.scenes || []);
+    state.generation.prompts = cloneJson(updated.generationPrompts || []);
+    state.generation.images = cloneJson(updated.sceneImages || []);
+    renderGenerationScenes();
+    renderGenerationPrompts();
+    const fallbackNote = data.fallback ? ` (${data.model} fallback)` : '';
+    $('#gen-prompt-hint').textContent = `Generated ${data.prompts.length} prompt(s)${fallbackNote}.`;
+    toast('Scene prompts generated and saved.', 'success');
+  } catch (err) {
+    $('#gen-prompt-hint').textContent = 'Scene prompt generation failed.';
+    if (err.code === 'NO_API_KEY') {
+      state.user.hasApiKey = false;
+      renderKeyState();
+    }
+    toast(err.message || 'Could not generate scene prompts.', 'error');
+  } finally {
+    finishProcess(processId);
+    button.disabled = false;
+  }
+}
+
+async function regenerateScenePrompt(scene, button) {
+  const projectId = state.generation.projectId;
+  if (!projectId) return toast('Select a Generation Stage project first.', 'error');
+
+  const model = $('#gen-model').value.trim();
+  if (!model) return toast('Choose a model.', 'error');
+
+  button.disabled = true;
+  const processId = startProcess(`Regenerating prompt · ${scene.title || 'Scene'}`);
+  try {
+    const data = await api('/api/generation/prompt', {
+      method: 'POST',
+      body: { projectId, scene, model },
+    });
+    const updated = data.project;
+    const index = state.projects.findIndex((p) => p.id === updated.id);
+    if (index >= 0) state.projects[index] = updated;
+    state.generation.scenes = cloneJson(updated.scenes || []);
+    state.generation.prompts = cloneJson(updated.generationPrompts || []);
+    state.generation.images = cloneJson(updated.sceneImages || []);
+    renderGenerationScenes();
+    renderGenerationPrompts();
+    $('#gen-prompt-hint').textContent = `Regenerated the prompt for "${scene.title}".`;
+    toast('Scene prompt regenerated.', 'success');
+  } catch (err) {
+    button.disabled = false;
+    toast(err.message || 'Could not regenerate the prompt.', 'error');
+  } finally {
+    finishProcess(processId);
+  }
+}
+
+async function uploadSceneImage(scene, file, button) {
+  const projectId = state.generation.projectId;
+  if (!projectId) return toast('Select a Generation Stage project first.', 'error');
+  if (!file) return;
+
+  const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+  if (file.type && !allowed.includes(file.type)) {
+    return toast('Upload a PNG, JPEG, or WebP image.', 'error');
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    return toast('Image is too large (max 20 MB).', 'error');
+  }
+
+  button.disabled = true;
+  const processId = startProcess(`Uploading image · ${scene.title || 'Scene'}`);
+  $('#gen-prompt-hint').textContent = `Uploading ${file.name}…`;
+
+  try {
+    const response = await fetch(
+      `/api/images/upload?projectId=${encodeURIComponent(projectId)}&sceneId=${encodeURIComponent(scene.id)}`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      }
+    );
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+
+    if (response.status === 401) {
+      expireSession();
+      return;
+    }
+    if (!response.ok) {
+      throw new ApiError(
+        (data && data.error) || `Upload failed (${response.status}).`,
+        response.status,
+        data && data.code
+      );
+    }
+
+    const index = state.projects.findIndex((p) => p.id === projectId);
+    if (index >= 0) {
+      state.projects[index].sceneImages = cloneJson(data.project.sceneImages || []);
+    }
+    state.generation.images = cloneJson(data.project.sceneImages || []);
+    renderGenerationPrompts();
+    $('#gen-prompt-hint').textContent = `Uploaded image attached to "${scene.title}".`;
+    toast('Image uploaded and attached to the project.', 'success');
+  } catch (err) {
+    $('#gen-prompt-hint').textContent = 'Image upload failed.';
+    button.disabled = false;
+    toast(err.message || 'Could not upload the image.', 'error');
+  } finally {
+    finishProcess(processId);
+  }
+}
+
+async function generateSceneImage(scene, entry, button) {
+  const projectId = state.generation.projectId;
+  if (!projectId) return toast('Select a Generation Stage project first.', 'error');
+  if (!state.user) return showAuth();
+  if (!state.user.hasBytePlusKey) {
+    toast('Save your BytePlus API key in Settings before generating images.', 'error');
+    switchTab('apis');
+    $('#bp-api-key').focus();
+    return;
+  }
+
+  const prompt = (entry.prompt || '').trim();
+  if (!prompt) {
+    return toast('Generate or enter a scene prompt first.', 'error');
+  }
+
+  const size = $('#gen-image-size').value;
+  const imageModelLabel = IMAGE_MODEL_LABELS[currentImageModel()] || 'Seedream';
+  button.disabled = true;
+  $('#gen-prompt-hint').textContent = `Generating a ${size} image with ${imageModelLabel}…`;
+  const processId = startProcess(`Generating image · ${scene.title || 'Scene'}`);
+
+  try {
+    const data = await api('/api/images/generate', {
+      method: 'POST',
+      body: { projectId, sceneId: scene.id, prompt, size },
+    });
+
+    const index = state.projects.findIndex((p) => p.id === projectId);
+    if (index >= 0) {
+      state.projects[index].sceneImages = cloneJson(data.project.sceneImages || []);
+    }
+    state.generation.images = cloneJson(data.project.sceneImages || []);
+    renderGenerationPrompts();
+    $('#gen-prompt-hint').textContent = `Image generated for "${scene.title}".`;
+    toast('Scene image generated and saved.', 'success');
+  } catch (err) {
+    if (err.code === 'NO_IMAGEGEN_KEY') {
+      state.user.hasBytePlusKey = false;
+      renderBytePlusKeyState();
+      switchTab('apis');
+      $('#bp-api-key').focus();
+    }
+    if (err.code === 'INVALID_IMAGEGEN_KEY' || err.code === 'IMAGEGEN_KEY_UNREADABLE') {
+      switchTab('apis');
+      $('#bp-api-key').focus();
+    }
+    $('#gen-prompt-hint').textContent = 'Image generation failed.';
+    button.disabled = false;
+    toast(err.message || 'Could not generate the image.', 'error');
+  } finally {
+    finishProcess(processId);
+  }
+}
+
+async function generateNextSceneImage() {
+  const projectId = state.generation.projectId;
+  if (!projectId) return toast('Select a Generation Stage project first.', 'error');
+  if (!state.generation.scenes.length) return toast('Add or load scenes first.', 'error');
+
+  const prompts = orderedGenerationPrompts();
+  const allPrompted = state.generation.scenes.every((scene) => {
+    const entry = prompts.find((prompt) => prompt.sceneId === scene.id);
+    return Boolean(entry && (entry.prompt || '').trim());
+  });
+  if (!allPrompted) return toast('Generate prompts for every scene first.', 'error');
+
+  const scene = state.generation.scenes.find(
+    (item) => !(state.generation.images || []).some((image) => image.sceneId === item.id)
+  );
+  if (!scene) return toast('Every scene already has an image.', 'success');
+
+  const entry = prompts.find((prompt) => prompt.sceneId === scene.id);
+  const button = $('#gen-generate-next-image');
+  await generateSceneImage(scene, entry, button);
+}
+
+$('#gen-project').addEventListener('change', (event) => {
+  if (event.target.value) selectGenerationProject(event.target.value);
+});
+
+$('#gen-add-scene').addEventListener('click', () => {
+  if (!state.generation.projectId) return toast('Select a project first.', 'error');
+  const number = state.generation.scenes.length + 1;
+  state.generation.scenes.push({
+    id: newSceneId(),
+    title: `Scene ${number}`,
+    action: '',
+    location: '',
+    characters: [],
+  });
+  $('#gen-scene-hint').textContent = 'New scene added. Save the outline to persist it.';
+  renderGenerationScenes();
+});
+
+$('#gen-save-scenes').addEventListener('click', saveGenerationScenes);
+$('#gen-generate-prompts').addEventListener('click', generateGenerationPrompts);
+$('#gen-generate-next-image').addEventListener('click', generateNextSceneImage);
+
+$('#gen-open-projects').addEventListener('click', () => {
+  setStageFilter('Generation Stage');
+  switchTab('projects');
+});
+
+function openModal(id) {
+  state.editingId = id || null;
+  const p = id ? state.projects.find((x) => x.id === id) : null;
+  $('#modal-title').textContent = p ? 'Edit project' : 'New project';
+  $('#pm-title').value = p ? p.title : '';
+  $('#pm-idea').value = p ? p.idea || '' : '';
+  $('#pm-description').value = p ? p.description : '';
+  $('#pm-reference').value = p ? p.referenceMaterial || '' : '';
+  $('#pm-stage').value = p ? p.stage || 'Idea Stage' : 'Idea Stage';
+  $('#pm-status').value = p ? p.status || 'Not Started' : 'Not Started';
+  $('#pm-priority').value = p ? p.priority : 'Medium';
+  $('#modal').classList.remove('hidden');
+  $('#pm-title').focus();
+}
+
+function closeModal() {
+  $('#modal').classList.add('hidden');
+  state.editingId = null;
+}
+
+async function saveModal() {
+  const title = $('#pm-title').value.trim();
+  if (!title) return toast('Title is required.', 'error');
+
+  const data = {
+    title,
+    idea: $('#pm-idea').value.trim(),
+    description: $('#pm-description').value.trim(),
+    referenceMaterial: $('#pm-reference').value.trim(),
+    stage: $('#pm-stage').value,
+    status: $('#pm-status').value,
+    priority: $('#pm-priority').value,
+  };
+
+  const button = $('#modal-save');
+  button.disabled = true;
+  try {
+    let saved;
+    if (state.editingId) {
+      const { project } = await api(`/api/projects/${encodeURIComponent(state.editingId)}`, {
+        method: 'PUT',
+        body: data,
+      });
+      const index = state.projects.findIndex((x) => x.id === project.id);
+      if (index >= 0) state.projects[index] = project;
+      saved = project;
+    } else {
+      const { project } = await api('/api/projects', {
+        method: 'POST',
+        body: { ...data, source: 'manual' },
+      });
+      state.projects.push(project);
+      saved = project;
+    }
+    state.stageFilter = saved.status === 'Done' ? 'Completed' : (saved.stage || state.stageFilter);
+    if (saved.status === 'Done') setStageFilter('Completed');
+    else if (state.stageFilter === 'Completed') setStageFilter(saved.stage || 'Idea Stage');
+    else setStageFilter(saved.stage || state.stageFilter);
+    closeModal();
+    renderProjects();
+    toast('Project saved.', 'success');
+  } catch (err) {
+    toast(err.message || 'Could not save the project.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('#new-project-btn').addEventListener('click', () => {
+  openModal(null);
+  const defaultStage = state.stageFilter === 'Generation Stage'
+    ? 'Reference Stage'
+    : state.stageFilter === 'Completed'
+      ? 'Idea Stage'
+      : state.stageFilter;
+  $('#pm-stage').value = defaultStage;
+});
+$('#modal-cancel').addEventListener('click', closeModal);
+$('#modal-save').addEventListener('click', saveModal);
+$('#modal').addEventListener('click', (e) => {
+  if (e.target === $('#modal')) closeModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#modal').classList.contains('hidden')) closeModal();
+});
+
+// ---------------------------------------------------------------------------
+// PM filters + export
+// ---------------------------------------------------------------------------
+$('#pm-search').addEventListener('input', renderProjects);
+$('#pm-filter').addEventListener('change', renderProjects);
+
+$('#pm-export-btn').addEventListener('click', () => {
+  if (!state.projects.length) return toast('No projects to export.', 'error');
+  const lines = state.projects.map((p) => {
+    const out = [`[${p.stage || 'Idea Stage'}] [${p.status}] (${p.priority}) ${p.title}`];
+    if (p.idea) out.push(`    Idea: ${p.idea}`);
+    if (p.description) out.push(`    Description: ${p.description}`);
+    if (p.referenceMaterial) out.push(`    Reference Material:\n${p.referenceMaterial}`);
+    if (Array.isArray(p.characterReferences) && p.characterReferences.length) {
+      p.characterReferences.forEach((item) => {
+        out.push(`    Character Reference — ${item.name || 'Character'} (${item.gender || ''}):\n${item.referenceMaterial || ''}`);
+      });
+    }
+    return out.join('\n');
+  });
+  const stamp = new Date().toISOString().slice(0, 10);
+  downloadText(`projects-${stamp}.txt`, lines.join('\n\n') + '\n');
+  toast('Exported ' + state.projects.length + ' project(s).', 'success');
+});
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+// The pre-accounts version kept the DeepSeek key in plaintext localStorage.
+// It is no longer used; remove it so the secret does not linger in the browser.
+try {
+  localStorage.removeItem('projectWorkflow.apiKey');
+} catch (_) { /* ignore */ }
+
+renderStageTabs();
+renderCharacterFields();
+renderReferenceProjects();
+renderStoryProjects();
+renderGenerationProjects();
+renderIdeas();
+renderProjects();
+renderChat();
+
+try {
+  const lastTab = localStorage.getItem(AUTH_TAB_KEY);
+  if (lastTab === 'register') setAuthMode('register');
+} catch (_) { /* ignore */ }
+
+initAuth();
