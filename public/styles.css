@@ -1605,3 +1605,6 @@ main {
 @media (max-width: 1100px) {
   .sidebar { width: 260px; flex-basis: 260px; }
 }
+
+.generation-review { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: .75rem; }
+.generation-review .hint { flex-basis: 100%; margin: 0; }

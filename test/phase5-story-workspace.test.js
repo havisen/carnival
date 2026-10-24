@@ -632,6 +632,11 @@ test('reference generation imports a reviewable workspace end to end', async (t)
   assert.equal(storyData.scenes.length, 6);
   assert.ok(storyData.scenes.every((scene) => scene.beat && scene.action && scene.props));
 
+  const referenceReview = result.data.generationReview;
+  assert.equal((await request('/api/generation/reviews/' + referenceReview.id, {
+    method: 'POST', cookie, body: { decision: 'approved' },
+  })).status, 200);
+
   // Regeneration without an explicit replacement choice is rejected.
   result = await request('/api/reference', {
     method: 'POST',
@@ -857,6 +862,15 @@ test('character sheet generation endpoint writes a versioned image', async (t) =
   assert.match(layout, /head to toe.*same scale.*consistent margins.*clear space/);
   assert.match(layout, /seamless light gray studio background.*same soft, even lighting/);
 
+  const pendingSheet = result.data.generationReview;
+  const duplicate = await request(`/api/story/${project.id}/characters/${character.id}/sheets/generate`, { method: 'POST', cookie });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.data.code, 'GENERATION_REVIEW_REQUIRED');
+  assert.equal(imagePrompts.length, 1, 'no duplicate provider call while awaiting a decision');
+  assert.equal((await request('/api/generation/reviews/' + pendingSheet.id, {
+    method: 'POST', cookie, body: { decision: 'disapproved' },
+  })).status, 200);
+
   result = await request(`/api/story/${project.id}/characters/${character.id}/sheets/generate`, { method: 'POST', cookie });
   assert.equal(result.status, 201, result.data && result.data.error);
   assert.equal(result.data.sheet.version, 2);
@@ -884,6 +898,15 @@ test('character sheet generation endpoint writes a versioned image', async (t) =
   assert.equal(served.status, 200);
   assert.equal(served.headers.get('content-type'), 'image/png');
   assert.deepEqual(Buffer.from(await served.arrayBuffer()), PNG);
+
+  assert.equal((await request('/api/generation/reviews/' + secondSheet.data.generationReview.id, {
+    method: 'POST', cookie, body: { decision: 'approved' },
+  })).status, 200);
+  assert.equal((await request('/api/story/sheets/' + result.data.sheet.id + '/promote', { method: 'POST', cookie })).status, 200);
+  const accepted = (await request(`/api/story/${project.id}`, { cookie })).data.story.characterSheets;
+  assert.equal(accepted.find((sheet) => sheet.id === secondSheet.data.sheet.id).status, 'final');
+  assert.equal(accepted.find((sheet) => sheet.id === result.data.sheet.id).status, 'final');
+  assert.deepEqual((await request('/api/generation/reviews', { cookie })).data.reviews, []);
 });
 
 test('DeepSeek chat endpoint authenticates and answers per mode', async (t) => {

@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-24.30" />
+  <link rel="stylesheet" href="styles.css?v=20261024-review" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -223,6 +223,7 @@
                 <button class="btn btn-primary btn-large" id="generate-btn" type="button">
                   <span id="generate-label">✨ Generate ideas</span>
                 </button>
+                <div id="generation-review-ideas" aria-live="polite"></div>
               </div>
               <p class="hint" id="gen-hint">Add context, then generate with your saved key.</p>
               <div class="spinner hidden" id="generating">
@@ -343,6 +344,7 @@
               <button class="btn btn-primary btn-large" id="ref-generate" type="button">
                 <span id="ref-generate-label">✨ Generate reference material</span>
               </button>
+              <div id="generation-review-reference" aria-live="polite"></div>
               <p class="hint" id="ref-hint">Select a Reference Stage project, add characters and a setting, then generate.</p>
               <div class="spinner hidden" id="ref-generating">
                 <span class="spinner-ring"></span>
@@ -387,6 +389,7 @@
               <select id="story-project"></select>
             </label>
             <button class="btn btn-primary btn-sm" id="story-generate-worksheet" type="button">Generate worksheet</button>
+              <div id="generation-review-workspace" aria-live="polite"></div>
           </div>
         </div>
 
@@ -420,6 +423,7 @@
               <label class="field inline"><span class="field-label">Number of pictures</span><input type="number" id="worksheet-picture-count" min="1" max="20" value="6" /></label>
               <button class="btn btn-secondary btn-sm" id="worksheet-generate-actions" type="button">Generate action references</button>
               <button class="btn btn-primary btn-sm hidden" id="worksheet-save-actions" type="button">Save action references</button>
+              <div id="generation-review-actions" aria-live="polite"></div>
             </div>
             <div id="worksheet-actions"></div>
           </div>
@@ -428,6 +432,7 @@
             <div class="results-head">
               <button class="btn btn-secondary btn-sm" id="worksheet-generate-locations" type="button">Generate location references</button>
               <button class="btn btn-primary btn-sm hidden" id="worksheet-save-locations" type="button">Save location references</button>
+              <div id="generation-review-locations" aria-live="polite"></div>
             </div>
             <div id="worksheet-locations"></div>
           </div>
@@ -571,6 +576,8 @@
                 <button class="btn btn-primary" id="gen-generate-prompts" type="button">✨ Generate Scene Prompts</button>
                 <button class="btn btn-secondary" id="gen-generate-next-image" type="button">🖼 Generate next image</button>
               </div>
+              <div id="generation-review-prompts" aria-live="polite"></div>
+              <div id="generation-review-images" aria-live="polite"></div>
               <p class="hint" id="gen-prompt-hint">Generate one photorealistic prompt per scene.</p>
               <div id="gen-prompts"></div>
             </div>
@@ -956,11 +963,11 @@
           <h2 class="card-title">Story Workspace</h2>
           <p>Choose a project and click <strong>Generate worksheet</strong> to view its name, idea, characters, setting, Reference Material, and Character References.</p>
           <h3>Character reference sheets</h3>
-          <p>Generate one selected character sheet or all sheets using only the individual Character Reference and the shared layout template. Preview each version; click <strong>Add this sheet</strong> when satisfied, or generate again. Add a sheet for every character to complete the reference task.</p>
+          <p>Generate one selected character sheet or all sheets using only the individual Character Reference and the shared layout template. Preview each version; click <strong>Add this sheet</strong> when satisfied, or <strong>Disapprove result</strong> before generating again. Add a sheet for every character to complete the reference task.</p>
           <h3>Action references</h3>
-          <p>Choose a picture count, then generate one action for each picture from Reference Material. Each action ends with a location sentence. Review and save or generate again. Saved actions form the scene outline.</p>
+          <p>Choose a picture count, then generate one action for each picture from Reference Material. Each action ends with a location sentence. Review and approve or disapprove the result before generating again. Saved actions form the scene outline.</p>
           <h3>Location references</h3>
-          <p>Once actions are saved, generate location descriptions from their ending location sentences and the saved setting. Review and save or generate again.</p>
+          <p>Once actions are saved, generate location descriptions from their ending location sentences and the saved setting. Review and approve or disapprove the result before generating again.</p>
         </div>
 
         <div class="card" id="docs-generation">
@@ -1263,7 +1270,7 @@
   </div>
 
   <div class="toast hidden" id="toast"></div>
-
-  <script src="app.js?v=2026-10-24.34"></script>
+  <script src="generation-review.js?v=20261024-review"></script>
+  <script src="app.js?v=20261024-review"></script>
 </body>
 </html>
