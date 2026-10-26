@@ -90,18 +90,6 @@ const state = {
     saving: false,
     generating: false,
   },
-  projectCharacters: {
-    projectId: '',
-    loadedFor: '',
-    loading: false,
-    error: '',
-    items: [],
-    selectedId: '',
-    formFor: '',
-    saving: false,
-    generating: false,
-    makers: [],
-  },
   generator: {
     loaded: false,
     loading: false,
@@ -129,10 +117,7 @@ const state = {
     projectId: '',
     data: null,
     error: null,
-    editor: null,
     dirty: false,
-    sheetCharacterId: '',
-    worksheetOpen: false,
     actionDraft: null,
     locationDraft: null,
   },
@@ -402,7 +387,6 @@ function expireSession() {
   resetSidebarTrack();
   resetLibrary();
   resetCharacters();
-  resetProjectCharacters();
   resetGenerator();
   resetSidebarAndChat();
   resetStudio();
@@ -488,7 +472,6 @@ $('#logout-btn').addEventListener('click', async () => {
   resetSidebarTrack();
   resetLibrary();
   resetCharacters();
-  resetProjectCharacters();
   resetGenerator();
   state.reference.projectId = null;
   state.reference.dirty = false;
@@ -918,7 +901,6 @@ function refreshImageTools() {
   applyAiSettings();
   if (state.generator.loaded) renderGenerator();
   if (state.characters.loaded) renderCharacters();
-  if (state.projectCharacters.loaded) renderProjectCharacters();
 }
 
 function applyImageSizeOptions(imageModel, selector = '#gen-image-size') {
@@ -956,7 +938,6 @@ function applyAiSettings() {
   $('#gen-image-model-label').textContent = IMAGE_MODEL_LABELS[imageModel] || imageModel;
   applyImageSizeOptions(imageModel);
   applyImageSizeOptions(imageModel, '#character-size');
-  applyImageSizeOptions(imageModel, '#project-character-size');
   applyImageSizeOptions(imageModel, '#generator-size');
 }
 
@@ -2117,56 +2098,6 @@ $('#library-modal').addEventListener('click', (event) => {
 // ---------------------------------------------------------------------------
 // Story workspace
 // ---------------------------------------------------------------------------
-const STORY_REFERENCE_CONFIG = {
-  character: {
-    collection: 'characters',
-    noun: 'Character',
-    fields: [
-      { key: 'name', label: 'Name', max: 120, required: true },
-      { key: 'gender', label: 'Gender', max: 40 },
-      { key: 'age', label: 'Age', max: 80 },
-      { key: 'appearance', label: 'Appearance', max: 5000, multiline: true },
-      { key: 'wardrobe', label: 'Wardrobe', max: 5000, multiline: true },
-      { key: 'continuityNotes', label: 'Continuity notes', max: 5000, multiline: true },
-    ],
-  },
-  location: {
-    collection: 'locations',
-    noun: 'Location',
-    fields: [
-      { key: 'name', label: 'Name', max: 200, required: true },
-      { key: 'description', label: 'Description', max: 5000, multiline: true },
-      { key: 'lighting', label: 'Lighting', max: 2000, multiline: true },
-      { key: 'continuityNotes', label: 'Continuity notes', max: 5000, multiline: true },
-    ],
-  },
-  style: {
-    collection: 'styles',
-    noun: 'Style',
-    fields: [
-      { key: 'name', label: 'Name', max: 200, required: true },
-      { key: 'description', label: 'Description', max: 5000, multiline: true },
-      { key: 'guidance', label: 'Visual guidance', max: 5000, multiline: true },
-      { key: 'exclusions', label: 'Exclusions (one per line)', max: 9000, multiline: true },
-    ],
-  },
-};
-
-function storySetHint(message) {
-  const hint = $('#story-brief-hint');
-  if (hint) hint.textContent = message || 'The brief is the canonical root of the story.';
-}
-
-function storyMarkDirty() {
-  state.story.dirty = true;
-  storySetHint('Unsaved changes. Save the section you are editing.');
-}
-
-function storyClearDirty() {
-  state.story.dirty = false;
-  storySetHint('The brief is the canonical root of the story.');
-}
-
 function storyProjectOptions() {
   const select = $('#story-project');
   const previous = state.story.projectId;
@@ -2193,9 +2124,7 @@ function renderStoryState() {
   $('#story-loading').classList.toggle('hidden', !state.story.loading);
   $('#story-empty').classList.toggle('hidden', state.story.loading || Boolean(state.story.data) || Boolean(state.story.error) || Boolean(state.story.projectId));
   $('#story-error').classList.toggle('hidden', !state.story.error);
-  $('#story-content').classList.toggle('hidden', !state.story.data);
-  $('#story-content').classList.add('hidden');
-  $('#story-worksheet').classList.toggle('hidden', !state.story.data || !state.story.worksheetOpen);
+  $('#story-forms').classList.toggle('hidden', state.story.loading || !state.story.data);
   if (state.story.error) $('#story-error-text').textContent = state.story.error;
 }
 
@@ -2218,8 +2147,6 @@ async function loadStory(projectId) {
     const { story } = await api(`/api/story/${encodeURIComponent(projectId)}`);
     if (state.story.projectId !== projectId) return;
     state.story.data = story;
-    if ((story.worksheet?.actions || []).length || (story.worksheet?.locations || []).length ||
-        (story.characterSheets || []).length) state.story.worksheetOpen = true;
     state.story.loaded = true;
     state.story.dirty = false;
     renderStory();
@@ -2233,37 +2160,11 @@ async function loadStory(projectId) {
   }
 }
 
-function setStoryInput(selector, value) {
-  const input = $(selector);
-  if (input) input.value = value || '';
-}
-
 function renderStory() {
-  const story = state.story.data;
-  if (!story) return;
+  if (!state.story.data) return;
   renderStoryState();
   renderWorksheet();
-  return;
-  const brief = story.brief || {};
-  setStoryInput('#story-brief-title', brief.title);
-  setStoryInput('#story-brief-logline', brief.logline);
-  setStoryInput('#story-brief-premise', brief.premise);
-  setStoryInput('#story-brief-tone', brief.tone);
-  setStoryInput('#story-brief-genre', brief.genre);
-  setStoryInput('#story-brief-audience', brief.audience);
-  setStoryInput('#story-brief-setting', brief.setting);
-  storyClearDirty();
-  renderStoryReferences('character');
-  renderStoryReferences('location');
-  renderStoryReferences('style');
-  renderStoryScenes();
-  renderStorySheetOptions();
-  renderStorySheets();
-  renderStoryWarnings();
-  const generateWorkspace = $('#story-generate-workspace');
-  if (generateWorkspace) {
-    generateWorkspace.classList.toggle('hidden', !story.hasReference);
-  }
+  applyStoryStep();
 }
 
 function worksheetText(label, value) {
@@ -2378,617 +2279,6 @@ function renderWorksheetList(type, items) {
   });
 }
 
-function storyApprovedBadge(approved) {
-  const badge = document.createElement('span');
-  badge.className = `story-badge ${approved ? 'approved' : 'unapproved'}`;
-  badge.textContent = approved ? 'Approved' : 'Not approved';
-  return badge;
-}
-
-function storyFormField(config) {
-  const wrapper = document.createElement('label');
-  wrapper.className = 'field';
-  const label = document.createElement('span');
-  label.className = 'field-label';
-  label.textContent = config.label;
-  const input = config.multiline ? document.createElement('textarea') : document.createElement('input');
-  if (config.multiline) input.rows = 3;
-  else input.type = config.type || 'text';
-  input.maxLength = config.max;
-  input.dataset.storyField = config.key;
-  wrapper.append(label, input);
-  return { wrapper, input };
-}
-
-function renderStoryReferences(type) {
-  const config = STORY_REFERENCE_CONFIG[type];
-  const story = state.story.data;
-  if (!story) return;
-  const container = $(`#story-${config.collection}`);
-  container.innerHTML = '';
-  const items = story[config.collection] || [];
-
-  items.forEach((item) => {
-    const card = document.createElement('div');
-    card.className = 'story-ref-item';
-    card.dataset.referenceId = item.id;
-
-    const head = document.createElement('div');
-    head.className = 'story-ref-head';
-    const name = document.createElement('strong');
-    name.textContent = item.name;
-    const badges = document.createElement('div');
-    badges.className = 'story-ref-badges';
-    badges.append(storyApprovedBadge(item.approved));
-    const approve = document.createElement('button');
-    approve.type = 'button';
-    approve.className = 'btn btn-sm ' + (item.approved ? 'btn-secondary' : 'btn-primary');
-    approve.textContent = item.approved ? '↩ Unapprove' : '✓ Approve';
-    approve.title = item.approved
-      ? `Unapprove this ${config.noun.toLowerCase()} reference`
-      : `Approve this ${config.noun.toLowerCase()} reference as canonical`;
-    approve.addEventListener('click', async () => {
-      approve.disabled = true;
-      try {
-        await api(`/api/story/${type}s/${encodeURIComponent(item.id)}`, {
-          method: 'PUT',
-          body: { approved: !item.approved },
-        });
-        await loadStory(state.story.projectId);
-        refreshSidebarStory(true);
-        toast(item.approved ? `${config.noun} unapproved.` : `${config.noun} approved.`, 'success');
-      } catch (err) {
-        approve.disabled = false;
-        toast(err.message || `Could not update the ${config.noun.toLowerCase()}.`, 'error');
-      }
-    });
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'btn btn-ghost btn-sm';
-    edit.textContent = 'Edit';
-    edit.addEventListener('click', () => {
-      state.story.editor = { type, id: item.id };
-      renderStoryReferences(type);
-    });
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'btn btn-danger btn-sm';
-    remove.textContent = 'Delete';
-    remove.addEventListener('click', async () => {
-      if (!confirm(`Delete ${config.noun.toLowerCase()} "${item.name}"?`)) return;
-      try {
-        await api(`/api/story/${type}s/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
-        await loadStory(state.story.projectId);
-        toast(`${config.noun} deleted.`, 'success');
-      } catch (err) {
-        toast(err.message || `Could not delete the ${config.noun.toLowerCase()}.`, 'error');
-      }
-    });
-    badges.append(approve, edit, remove);
-    head.append(name, badges);
-    card.appendChild(head);
-
-    if (item.legacyMaterial) {
-      const legacy = document.createElement('p');
-      legacy.className = 'story-legacy';
-      legacy.textContent = `Legacy reference material: ${item.legacyMaterial}`;
-      card.appendChild(legacy);
-    }
-
-    const meta = document.createElement('p');
-    meta.className = 'story-ref-meta';
-    if (type === 'character') {
-      meta.textContent = [item.gender, item.age, item.wardrobe].filter(Boolean).join(' · ') || 'No structured details yet.';
-    } else if (type === 'location') {
-      meta.textContent = [item.description, item.lighting].filter(Boolean).join(' · ') || 'No location description yet.';
-    } else {
-      meta.textContent = [item.description, item.guidance].filter(Boolean).join(' · ') || 'No style guidance yet.';
-    }
-    card.appendChild(meta);
-    container.appendChild(card);
-  });
-
-  if (!items.length) {
-    const empty = document.createElement('p');
-    empty.className = 'hint';
-    empty.textContent = `No ${config.noun.toLowerCase()} records yet.`;
-    container.appendChild(empty);
-  }
-
-  if (state.story.editor && state.story.editor.type === type) {
-    const editing = state.story.editor.id ? items.find((item) => item.id === state.story.editor.id) : null;
-    const form = document.createElement('div');
-    form.className = 'story-ref-form';
-    const heading = document.createElement('h3');
-    heading.textContent = editing ? `Edit ${config.noun.toLowerCase()}` : `New ${config.noun.toLowerCase()}`;
-    form.appendChild(heading);
-    const grid = document.createElement('div');
-    grid.className = 'story-form-grid';
-    const fields = {};
-    config.fields.forEach((fieldConfig) => {
-      const field = storyFormField(fieldConfig);
-      field.input.value = editing
-        ? (Array.isArray(editing[fieldConfig.key]) ? editing[fieldConfig.key].join('\n') : editing[fieldConfig.key] || '')
-        : '';
-      fields[fieldConfig.key] = field.input;
-      grid.appendChild(field.wrapper);
-    });
-    form.appendChild(grid);
-
-    const approvedWrap = document.createElement('label');
-    approvedWrap.className = 'story-check';
-    const approved = document.createElement('input');
-    approved.type = 'checkbox';
-    approved.checked = editing ? Boolean(editing.approved) : false;
-    approvedWrap.append(approved, document.createTextNode(' Approved canonical reference'));
-    form.appendChild(approvedWrap);
-
-    const actions = document.createElement('div');
-    actions.className = 'story-form-actions';
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'btn btn-primary btn-sm';
-    save.textContent = editing ? 'Save changes' : `Create ${config.noun.toLowerCase()}`;
-    save.addEventListener('click', async () => {
-      const body = { approved: approved.checked };
-      for (const [key, input] of Object.entries(fields)) {
-        body[key] = key === 'exclusions'
-          ? input.value.split('\n').map((value) => value.trim()).filter(Boolean)
-          : input.value;
-      }
-      try {
-        const endpoint = editing
-          ? `/api/story/${type}s/${encodeURIComponent(editing.id)}`
-          : `/api/story/${encodeURIComponent(state.story.projectId)}/${type}s`;
-        await api(endpoint, { method: editing ? 'PUT' : 'POST', body });
-        state.story.editor = null;
-        await loadStory(state.story.projectId);
-        refreshSidebarStory(true);
-        toast(`${config.noun} saved.`, 'success');
-      } catch (err) {
-        toast(err.message || `Could not save the ${config.noun.toLowerCase()}.`, 'error');
-      }
-    });
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'btn btn-ghost btn-sm';
-    cancel.textContent = 'Cancel';
-    cancel.addEventListener('click', () => {
-      state.story.editor = null;
-      renderStoryReferences(type);
-    });
-    actions.append(save, cancel);
-    form.appendChild(actions);
-    container.appendChild(form);
-  }
-}
-
-function renderStoryScenes() {
-  const story = state.story.data;
-  const container = $('#story-scenes');
-  if (!story) return;
-  container.innerHTML = '';
-  const scenes = story.scenes || [];
-  if (!scenes.length) {
-    const empty = document.createElement('p');
-    empty.className = 'hint';
-    empty.textContent = 'No scenes yet. Add a scene or generate reference material.';
-    container.appendChild(empty);
-  }
-  const approvedCharacters = (story.characters || []).filter((item) => item.approved);
-  const approvedLocations = (story.locations || []).filter((item) => item.approved);
-
-  scenes.forEach((scene, index) => {
-    const card = document.createElement('div');
-    card.className = 'story-scene-card';
-    card.dataset.sceneCard = scene.id;
-    const head = document.createElement('div');
-    head.className = 'story-scene-head';
-    const title = document.createElement('strong');
-    title.textContent = `Scene ${index + 1}`;
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'btn btn-ghost btn-sm';
-    remove.textContent = 'Remove';
-    remove.addEventListener('click', () => {
-      story.scenes = story.scenes.filter((item) => item.id !== scene.id);
-      storyMarkDirty();
-      renderStoryScenes();
-    });
-    head.append(title, remove);
-    card.appendChild(head);
-
-    const grid = document.createElement('div');
-    grid.className = 'story-form-grid';
-    const fields = {};
-    [
-      { key: 'title', label: 'Title', max: 200 },
-      { key: 'beat', label: 'Beat', max: 2000 },
-      { key: 'props', label: 'Props', max: 2000 },
-      { key: 'action', label: 'Action', max: 5000, multiline: true },
-    ].forEach((config) => {
-      const field = storyFormField(config);
-      field.input.value = scene[config.key] || '';
-      field.input.addEventListener('input', storyMarkDirty);
-      fields[config.key] = field.input;
-      grid.appendChild(field.wrapper);
-    });
-
-    const locationField = document.createElement('label');
-    locationField.className = 'field';
-    const locationLabel = document.createElement('span');
-    locationLabel.className = 'field-label';
-    locationLabel.textContent = 'Location';
-    const locationSelect = document.createElement('select');
-    const none = document.createElement('option');
-    none.value = '';
-    none.textContent = 'No linked location';
-    locationSelect.appendChild(none);
-    (story.locations || []).forEach((location) => {
-      const option = document.createElement('option');
-      option.value = location.id;
-      option.textContent = `${location.name}${location.approved ? '' : ' (not approved)'}`;
-      locationSelect.appendChild(option);
-    });
-    locationSelect.value = scene.locationId || '';
-    locationSelect.addEventListener('change', storyMarkDirty);
-    locationField.append(locationLabel, locationSelect);
-    grid.appendChild(locationField);
-
-    const locationTextField = storyFormField({ key: 'locationText', label: 'Or unlinked location name', max: 200 });
-    locationTextField.input.value = scene.location || '';
-    locationTextField.input.addEventListener('input', storyMarkDirty);
-    fields.locationText = locationTextField.input;
-    grid.appendChild(locationTextField.wrapper);
-
-    const characterNamesField = storyFormField({ key: 'characterNames', label: 'Or unlinked character names (comma separated)', max: 2000 });
-    characterNamesField.input.value = (scene.characters || []).join(', ');
-    characterNamesField.input.addEventListener('input', storyMarkDirty);
-    fields.characterNames = characterNamesField.input;
-    grid.appendChild(characterNamesField.wrapper);
-
-    const characterField = document.createElement('div');
-    characterField.className = 'field story-span';
-    const characterLabel = document.createElement('span');
-    characterLabel.className = 'field-label';
-    characterLabel.textContent = 'Characters';
-    const characterList = document.createElement('div');
-    characterList.className = 'story-check-list';
-    (story.characters || []).forEach((character) => {
-      const label = document.createElement('label');
-      label.className = 'story-check';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.value = character.id;
-      checkbox.checked = (scene.characterIds || []).includes(character.id);
-      checkbox.addEventListener('change', storyMarkDirty);
-      label.append(checkbox, document.createTextNode(`${character.name}${character.approved ? '' : ' (not approved)'}`));
-      characterList.appendChild(label);
-    });
-    characterField.append(characterLabel, characterList);
-    grid.appendChild(characterField);
-    card.appendChild(grid);
-    card._storyFields = { ...fields, locationSelect, characterList };
-    container.appendChild(card);
-  });
-
-  $('#story-add-scene').disabled = false;
-  $('#story-save-scenes').disabled = false;
-  $('#story-scene-hint').textContent = approvedCharacters.length || approvedLocations.length
-    ? 'Only approved locations and characters can be linked. The server rejects unapproved links.'
-    : 'Approve at least one character and location before linking scenes.';
-}
-
-async function saveStoryScenes() {
-  const cards = Array.from($('#story-scenes').querySelectorAll('.story-scene-card'));
-  const scenes = cards.map((card) => {
-    const fields = card._storyFields;
-    const locationId = fields.locationSelect.value;
-    const location = (state.story.data.locations || []).find((item) => item.id === locationId);
-    const characterIds = Array.from(fields.characterList.querySelectorAll('input:checked')).map((input) => input.value);
-    const selectedCharacters = characterIds.map((id) => (state.story.data.characters || []).find((item) => item.id === id)).filter(Boolean).map((item) => item.name);
-    const unlinkedCharacterNames = fields.characterNames.value.split(',').map((value) => value.trim()).filter(Boolean);
-    return {
-      id: card.dataset.sceneCard,
-      title: fields.title.value,
-      beat: fields.beat.value,
-      props: fields.props.value,
-      action: fields.action.value,
-      location: location ? location.name : fields.locationText.value.trim(),
-      locationId,
-      characters: selectedCharacters.length ? selectedCharacters : unlinkedCharacterNames,
-      characterIds,
-    };
-  });
-  try {
-    const { scenes: saved } = await api(`/api/story/${encodeURIComponent(state.story.projectId)}/scenes`, {
-      method: 'PUT',
-      body: { scenes },
-    });
-    state.story.data.scenes = saved;
-    state.story.dirty = false;
-    await loadStory(state.story.projectId);
-    refreshSidebarStory(true);
-    toast('Scenes saved.', 'success');
-  } catch (err) {
-    toast(err.message || 'Could not save the scenes.', 'error');
-  }
-}
-
-function renderStorySheetOptions() {
-  const story = state.story.data;
-  const select = $('#story-sheet-character');
-  if (!story || !select) return;
-  select.innerHTML = '';
-  story.characters.forEach((character) => {
-    const option = document.createElement('option');
-    option.value = character.id;
-    option.textContent = character.name;
-    select.appendChild(option);
-  });
-  if (story.characters.some((character) => character.id === state.story.sheetCharacterId)) {
-    select.value = state.story.sheetCharacterId;
-  } else {
-    state.story.sheetCharacterId = story.characters[0] ? story.characters[0].id : '';
-    select.value = state.story.sheetCharacterId;
-  }
-  if (!story.characters.length) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = 'No characters';
-    select.appendChild(option);
-  }
-}
-
-function renderStorySheets() {
-  const story = state.story.data;
-  const container = $('#story-sheets');
-  if (!story || !container) return;
-  container.innerHTML = '';
-  const characterId = state.story.sheetCharacterId;
-  const sheets = (story.characterSheets || [])
-    .filter((sheet) => sheet.characterId === characterId)
-    .sort((a, b) => b.version - a.version);
-  if (!sheets.length) {
-    const empty = document.createElement('p');
-    empty.className = 'hint';
-    empty.textContent = 'No character sheets yet. Generate a photorealistic reference image for this character.';
-    container.appendChild(empty);
-  }
-  sheets.forEach((sheet) => {
-    const card = document.createElement('div');
-    card.className = 'story-sheet-version';
-    const head = document.createElement('div');
-    head.className = 'story-prompt-head';
-    const version = document.createElement('strong');
-    version.textContent = `Version ${sheet.version}`;
-    const status = document.createElement('span');
-    status.className = `story-badge ${sheet.status === 'final' ? 'approved' : 'draft'}`;
-    status.textContent = sheet.status === 'final' ? 'Final' : 'Draft';
-    const meta = document.createElement('span');
-    meta.className = 'story-ref-meta';
-    meta.textContent = sheet.imageModel || 'Image model not recorded';
-    head.append(version, status, meta);
-
-    const img = document.createElement('img');
-    img.className = 'story-sheet-image';
-    img.src = `/api/story/sheet-image/${encodeURIComponent(story.projectId)}/${encodeURIComponent(sheet.file)}`;
-    img.alt = `Character sheet version ${sheet.version}`;
-    img.loading = 'lazy';
-
-    const actions = document.createElement('div');
-    actions.className = 'story-form-actions';
-    if (sheet.status !== 'final') {
-      const promote = document.createElement('button');
-      promote.type = 'button';
-      promote.className = 'btn btn-secondary btn-sm';
-      promote.textContent = 'Promote to final';
-      promote.addEventListener('click', async () => {
-        try {
-          await api(`/api/story/sheets/${encodeURIComponent(sheet.id)}/promote`, { method: 'POST' });
-          await loadStory(state.story.projectId);
-          toast('Character sheet promoted to final.', 'success');
-        } catch (err) {
-          toast(err.message || 'Could not promote the character sheet.', 'error');
-        }
-      });
-      actions.appendChild(promote);
-    }
-    card.append(head, img, actions);
-    container.appendChild(card);
-  });
-}
-
-function promptDiffTokens(textValue) {
-  return String(textValue || '').split(/(\s+)/).filter((token) => token !== '');
-}
-
-function appendPromptDiff(column, textValue, otherText) {
-  const heading = document.createElement('h4');
-  heading.textContent = 'Version text';
-  const body = document.createElement('div');
-  body.className = 'prompt-diff-text';
-  const tokens = promptDiffTokens(textValue);
-  const other = promptDiffTokens(otherText);
-  let prefix = 0;
-  while (prefix < tokens.length && prefix < other.length && tokens[prefix] === other[prefix]) prefix += 1;
-  let suffix = 0;
-  while (
-    suffix < tokens.length - prefix &&
-    suffix < other.length - prefix &&
-    tokens[tokens.length - 1 - suffix] === other[other.length - 1 - suffix]
-  ) suffix += 1;
-  const before = tokens.slice(0, prefix).join('');
-  const changed = tokens.slice(prefix, tokens.length - suffix).join('');
-  const after = suffix ? tokens.slice(tokens.length - suffix).join('') : '';
-  body.appendChild(document.createTextNode(before));
-  if (changed) {
-    const mark = document.createElement('mark');
-    mark.textContent = changed;
-    body.appendChild(mark);
-  }
-  body.appendChild(document.createTextNode(after));
-  column.append(heading, body);
-}
-
-async function generateStorySheet() {
-  const projectId = state.story.projectId;
-  const characterId = state.story.sheetCharacterId;
-  if (!characterId) return toast('Add or choose a character first.', 'error');
-  if (!state.user) return showAuth();
-  if (!hasImageApiKey()) {
-    toast(`Save your ${imageProviderLabel()} API key in Settings to generate images.`, 'error');
-    switchTab('apis');
-    return;
-  }
-  const button = $('#story-generate-sheet');
-  button.disabled = true;
-  button.textContent = 'Generating…';
-  const processId = startProcess('Generating character sheet');
-  try {
-    await api(`/api/story/${encodeURIComponent(projectId)}/characters/${encodeURIComponent(characterId)}/sheets/generate`, {
-      method: 'POST',
-    });
-    await loadStory(projectId);
-    refreshSidebarStory(true);
-    toast('Character sheet image generated.', 'success');
-  } catch (err) {
-    handleMissingImageKey(err);
-    toast(err.message || 'Could not generate the character sheet.', 'error');
-  } finally {
-    finishProcess(processId);
-    button.disabled = false;
-    button.textContent = '✨ Generate character sheet';
-  }
-}
-
-function renderStoryWarnings() {
-  const story = state.story.data;
-  const container = $('#story-warnings');
-  if (!story) return;
-  container.innerHTML = '';
-  const warnings = story.warnings || [];
-  $('#story-warning-count').textContent = warnings.length ? `${warnings.length} warning(s)` : 'No warnings';
-  if (!warnings.length) {
-    const clean = document.createElement('p');
-    clean.className = 'hint';
-    clean.textContent = 'No continuity warnings. This does not imply publication approval.';
-    container.appendChild(clean);
-    return;
-  }
-  warnings.forEach((warning) => {
-    const row = document.createElement('div');
-    row.className = 'story-warning';
-    const text = document.createElement('span');
-    text.textContent = warning.message;
-    row.appendChild(text);
-    if (warning.sceneId) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'btn btn-ghost btn-sm';
-      button.textContent = 'Go to scene';
-      button.addEventListener('click', () => {
-        const card = document.querySelector(`[data-scene-card="${warning.sceneId}"]`);
-        if (card) {
-          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          card.classList.add('story-flash');
-          setTimeout(() => card.classList.remove('story-flash'), 1200);
-        }
-      });
-      row.appendChild(button);
-    } else if (warning.referenceId) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'btn btn-ghost btn-sm';
-      button.textContent = 'Go to reference';
-      button.addEventListener('click', () => {
-        const card = document.querySelector(`[data-reference-id="${warning.referenceId}"]`);
-        if (card) {
-          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          card.classList.add('story-flash');
-          setTimeout(() => card.classList.remove('story-flash'), 1200);
-        }
-      });
-      row.appendChild(button);
-    }
-    container.appendChild(row);
-  });
-}
-
-async function saveStoryBrief() {
-  try {
-    await api(`/api/story/${encodeURIComponent(state.story.projectId)}/brief`, {
-      method: 'PUT',
-      body: {
-        title: $('#story-brief-title').value,
-        logline: $('#story-brief-logline').value,
-        premise: $('#story-brief-premise').value,
-        tone: $('#story-brief-tone').value,
-        genre: $('#story-brief-genre').value,
-        audience: $('#story-brief-audience').value,
-        setting: $('#story-brief-setting').value,
-      },
-    });
-    await loadStory(state.story.projectId);
-    refreshSidebarStory(true);
-    toast('Story brief saved.', 'success');
-  } catch (err) {
-    toast(err.message || 'Could not save the story brief.', 'error');
-  }
-}
-
-async function generateStoryWorkspace(replace = false) {
-  const projectId = state.story.projectId;
-  if (!projectId) return toast('Choose a project first.', 'error');
-  if (!state.user) return showAuth();
-  if (!hasTextApiKey()) {
-    toast('Save the selected text provider API key in Settings first.', 'error');
-    switchTab('apis');
-    return;
-  }
-
-  const button = $('#story-generate-workspace');
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'Generating…';
-  }
-  let retryReplace = false;
-  try {
-    const data = await api(`/api/story/${encodeURIComponent(projectId)}/workspace/generate`, {
-      method: 'POST',
-      body: { replace },
-    });
-    state.story.data = data.story;
-    renderStory();
-    refreshSidebarStory(true);
-    const note = data.workspace && data.workspace.replaced
-      ? 'Structured workspace replaced with newly generated drafts (awaiting review).'
-      : 'Structured Story Workspace drafts generated from the reference material (awaiting review).';
-    toast(note, 'success');
-  } catch (err) {
-    if (err.code === 'WORKSPACE_REPLACE_REQUIRED') {
-      const confirmReplace = confirm(
-        'Structured Story Workspace records already exist for this project. Replace them — including any edits or approvals — with newly generated drafts?'
-      );
-      if (confirmReplace) retryReplace = true;
-      else toast('Generation cancelled. Existing structured records were kept.', 'error');
-    } else {
-      if (err.code === 'NO_API_KEY') {
-        state.user.hasApiKey = false;
-        renderKeyState();
-      }
-      toast(err.message || 'Could not generate the workspace.', 'error');
-    }
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = '✨ Generate workspace from reference';
-    }
-  }
-
-  if (retryReplace) return generateStoryWorkspace(true);
-}
-
 // The caller may pass its own processId so a batch run keeps one tracker row
 // for the whole batch instead of one per character.
 async function generateWorksheetSheet(characterId, button, ownedProcessId) {
@@ -3040,11 +2330,6 @@ async function saveWorksheetReferences(type) {
   } catch (err) { toast(err.message || 'Could not save references.', 'error'); button.disabled = false; }
 }
 
-$('#story-generate-worksheet').addEventListener('click', () => {
-  state.story.worksheetOpen = true;
-  renderStoryState();
-  if (state.story.data) renderWorksheet();
-});
 $('#worksheet-generate-one').addEventListener('click', (event) => generateWorksheetSheet($('#worksheet-character').value, event.currentTarget));
 $('#worksheet-generate-all').addEventListener('click', async (event) => {
   const button = event.currentTarget;
@@ -3079,61 +2364,14 @@ $('#story-project').addEventListener('change', (event) => {
     event.target.value = state.story.projectId;
     return;
   }
-  state.story.projectId = event.target.value;
-  state.story.editor = null;
-  state.story.sheetCharacterId = '';
-  state.story.worksheetOpen = true;
+  setStudioStory(event.target.value);
+  renderModuleContext();
+  renderStudioIdeaCard();
   state.story.actionDraft = null;
   state.story.locationDraft = null;
   loadStory(state.story.projectId);
 });
-const storyRefresh = $('#story-refresh');
-if (storyRefresh) storyRefresh.addEventListener('click', () => loadStory(state.story.projectId));
 $('#story-retry').addEventListener('click', () => loadStory(state.story.projectId));
-const storyGenerateWorkspace = $('#story-generate-workspace');
-if (storyGenerateWorkspace) storyGenerateWorkspace.addEventListener('click', () => generateStoryWorkspace(false));
-$('#story-save-brief').addEventListener('click', saveStoryBrief);
-const storyValidate = $('#story-validate');
-if (storyValidate) storyValidate.addEventListener('click', async () => {
-  try {
-    const { warnings } = await api(`/api/story/${encodeURIComponent(state.story.projectId)}/validate`);
-    state.story.data.warnings = warnings;
-    renderStoryWarnings();
-    toast(warnings.length ? `Found ${warnings.length} continuity warning(s).` : 'No continuity warnings.', warnings.length ? 'error' : 'success');
-  } catch (err) {
-    toast(err.message || 'Could not validate continuity.', 'error');
-  }
-});
-['#story-add-character', '#story-add-location', '#story-add-style'].forEach((selector, index) => {
-  $(selector).addEventListener('click', () => {
-    state.story.editor = { type: ['character', 'location', 'style'][index], id: null };
-    renderStoryReferences(state.story.editor.type);
-  });
-});
-$('#story-add-scene').addEventListener('click', () => {
-  state.story.data.scenes.push({
-    id: `scene-${Date.now()}`,
-    order: state.story.data.scenes.length,
-    title: `Scene ${state.story.data.scenes.length + 1}`,
-    beat: '',
-    props: '',
-    action: '',
-    location: '',
-    characters: [],
-    locationId: '',
-    characterIds: [],
-  });
-  storyMarkDirty();
-  renderStoryScenes();
-});
-$('#story-save-scenes').addEventListener('click', saveStoryScenes);
-$('#story-sheet-character').addEventListener('change', (event) => {
-  state.story.sheetCharacterId = event.target.value;
-  renderStorySheets();
-});
-$('#story-generate-sheet').addEventListener('click', generateStorySheet);
-$('#story-content').addEventListener('input', storyMarkDirty);
-$('#story-content').addEventListener('change', storyMarkDirty);
 
 $('#ref-open-story').addEventListener('click', () => switchTab('story'));
 $('#gen-open-story').addEventListener('click', () => switchTab('story'));
@@ -4426,411 +3664,6 @@ $('#character-save').addEventListener('click', saveCharacter);
 $('#character-generate').addEventListener('click', generateCharacterImage);
 $('#character-delete').addEventListener('click', deleteCharacter);
 $('#characters-retry').addEventListener('click', () => loadCharacters({ force: true }));
-
-// ---------------------------------------------------------------------------
-// Project characters
-//
-// The same builder, scoped to one project. Characters created here carry that
-// project's id, so the Character maker tab never lists them, and the project
-// list never shows standalone characters.
-// ---------------------------------------------------------------------------
-let projectCharacterOptionsSignature = '';
-
-function resetProjectCharacters() {
-  state.projectCharacters.projectId = '';
-  state.projectCharacters.loadedFor = '';
-  state.projectCharacters.loading = false;
-  state.projectCharacters.error = '';
-  state.projectCharacters.items = [];
-  state.projectCharacters.selectedId = '';
-  state.projectCharacters.formFor = '';
-  state.projectCharacters.saving = false;
-  state.projectCharacters.generating = false;
-  state.projectCharacters.makers = [];
-  projectCharacterOptionsSignature = '';
-}
-
-function projectCharacterProjects() {
-  return state.projects
-    .filter((project) => project.status !== 'Done')
-    .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-}
-
-function selectedProjectCharacter() {
-  return state.projectCharacters.items.find((item) => item.id === state.projectCharacters.selectedId) || null;
-}
-
-function upsertProjectCharacter(character) {
-  if (!character) return;
-  const index = state.projectCharacters.items.findIndex((item) => item.id === character.id);
-  if (index === -1) state.projectCharacters.items.unshift(character);
-  else state.projectCharacters.items[index] = character;
-}
-
-function renderProjectCharacterProjects() {
-  const select = $('#project-characters-project');
-  if (!select) return;
-  const projects = projectCharacterProjects();
-  const signature = projects.map((project) => project.id).join(',');
-  if (signature !== projectCharacterOptionsSignature) {
-    projectCharacterOptionsSignature = signature;
-    select.innerHTML = '';
-    if (!projects.length) {
-      const option = document.createElement('option');
-      option.value = '';
-      option.textContent = 'No active projects';
-      select.appendChild(option);
-    }
-    projects.forEach((project) => {
-      const option = document.createElement('option');
-      option.value = project.id;
-      option.textContent = `${project.title} · ${project.stage || 'Idea Stage'}`;
-      select.appendChild(option);
-    });
-  }
-  if (!projects.some((project) => project.id === state.projectCharacters.projectId)) {
-    state.projectCharacters.projectId = projects.length ? projects[0].id : '';
-  }
-  select.value = state.projectCharacters.projectId;
-}
-
-async function loadProjectCharacters(options = {}) {
-  if (!state.user || state.projectCharacters.loading) return;
-  renderProjectCharacterProjects();
-  const projectId = state.projectCharacters.projectId;
-  if (!projectId) {
-    state.projectCharacters.items = [];
-    state.projectCharacters.selectedId = '';
-    renderProjectCharacters();
-    return;
-  }
-  if (state.projectCharacters.loadedFor === projectId && !options.force) {
-    renderProjectCharacters();
-    return;
-  }
-
-  state.projectCharacters.loading = true;
-  state.projectCharacters.error = '';
-  renderProjectCharacters();
-  applyImageSizeOptions(currentImageModel(), '#project-character-size');
-  try {
-    const [scoped, makers] = await Promise.all([
-      api(`/api/characters?projectId=${encodeURIComponent(projectId)}`),
-      api('/api/characters'),
-    ]);
-    state.projectCharacters.items = Array.isArray(scoped.characters) ? scoped.characters : [];
-    state.projectCharacters.makers = Array.isArray(makers.characters) ? makers.characters : [];
-    state.projectCharacters.loadedFor = projectId;
-    if (!selectedProjectCharacter()) {
-      state.projectCharacters.selectedId = state.projectCharacters.items.length
-        ? state.projectCharacters.items[0].id
-        : '';
-    }
-  } catch (err) {
-    if (err.status !== 401) state.projectCharacters.error = err.message || 'Could not load project characters.';
-  } finally {
-    state.projectCharacters.loading = false;
-    renderProjectCharacters();
-  }
-}
-
-function renderProjectCharacters() {
-  const panel = $('#panel-project-characters');
-  if (!panel) return;
-
-  const error = $('#project-characters-error');
-  error.classList.toggle('hidden', !state.projectCharacters.error);
-  if (state.projectCharacters.error) {
-    $('#project-characters-error-text').textContent = state.projectCharacters.error;
-  }
-
-  const list = $('#project-character-list');
-  list.innerHTML = '';
-  $('#project-characters-count').textContent = state.projectCharacters.items.length
-    ? `${state.projectCharacters.items.length} saved`
-    : '';
-
-  if (!state.projectCharacters.projectId) {
-    const hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = 'No active projects. Create or reopen a project first.';
-    list.appendChild(hint);
-  } else if (!state.projectCharacters.items.length) {
-    const hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = state.projectCharacters.loading
-      ? 'Loading characters…'
-      : 'No characters in this project yet. Create one, or copy a final image from the Character maker.';
-    list.appendChild(hint);
-  }
-
-  state.projectCharacters.items.forEach((character) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'maker-character'
-      + (character.id === state.projectCharacters.selectedId ? ' active' : '');
-    const name = document.createElement('strong');
-    name.textContent = character.name;
-    const meta = document.createElement('span');
-    meta.className = 'hint';
-    const final = (character.versions || []).find((version) => version.status === 'final');
-    meta.textContent = character.versionCount
-      ? `${character.versionCount} version${character.versionCount === 1 ? '' : 's'}${final ? ` · final: ${final.mode === 'sheet' ? 'sheet' : 'portrait'}` : ' · no final yet'}`
-      : 'No images yet';
-    button.append(name, meta);
-    button.addEventListener('click', () => {
-      state.projectCharacters.selectedId = character.id;
-      renderProjectCharacters();
-    });
-    list.appendChild(button);
-  });
-
-  renderProjectCharacterEditor();
-}
-
-function renderProjectCharacterReuse() {
-  const select = $('#project-character-reuse');
-  const importButton = $('#project-character-import');
-  const candidates = [];
-  state.projectCharacters.makers.forEach((character) => {
-    const final = (character.versions || []).find((version) => version.status === 'final');
-    if (final) candidates.push({ character, version: final });
-  });
-
-  const previous = select.value;
-  select.innerHTML = '';
-  if (!candidates.length) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = 'No final Character maker images yet';
-    select.appendChild(option);
-  }
-  candidates.forEach(({ character, version }) => {
-    const option = document.createElement('option');
-    option.value = version.id;
-    option.textContent = `${character.name} · version ${version.version} (${version.mode === 'sheet' ? 'sheet' : 'portrait'})`;
-    select.appendChild(option);
-  });
-  const keep = candidates.some((item) => item.version.id === previous) ? previous : '';
-  select.value = keep || (candidates.length ? candidates[0].version.id : '');
-  importButton.disabled = !candidates.length || state.projectCharacters.generating;
-}
-
-function renderProjectCharacterEditor() {
-  const character = selectedProjectCharacter();
-  const empty = $('#project-character-empty');
-  const fields = $('#project-character-fields');
-  const remove = $('#project-character-delete');
-
-  if (!character) {
-    $('#project-character-editor-title').textContent = 'Character';
-    empty.classList.remove('hidden');
-    fields.classList.add('hidden');
-    remove.classList.add('hidden');
-    return;
-  }
-
-  empty.classList.add('hidden');
-  fields.classList.remove('hidden');
-  remove.classList.remove('hidden');
-  $('#project-character-editor-title').textContent = character.name || 'Character';
-
-  if (state.projectCharacters.formFor !== character.id) {
-    state.projectCharacters.formFor = character.id;
-    $('#project-character-name').value = character.name || '';
-    $('#project-character-description').value = character.description || '';
-  }
-
-  const hasKey = hasImageApiKey();
-  const busy = state.projectCharacters.generating;
-  $('#project-character-generate').disabled = busy || !hasKey;
-  $('#project-character-save').disabled = busy || state.projectCharacters.saving;
-  remove.disabled = busy;
-  $('#project-character-hint').textContent = busy
-    ? 'Generating…'
-    : !hasKey
-      ? `Save your ${imageProviderLabel()} API key in Settings to generate images.`
-      : character.description.trim()
-        ? 'The description drives the image. Generate again to add another version.'
-        : 'Describe this character, then generate an image.';
-  $('#project-character-versions').innerHTML = '';
-  const versions = [...(character.versions || [])].sort((a, b) => b.version - a.version);
-  if (!versions.length) {
-    const hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = 'No images yet. Generate one, or copy a final image from the Character maker.';
-    $('#project-character-versions').appendChild(hint);
-  }
-  versions.forEach((version) => {
-    $('#project-character-versions').appendChild(characterVersionCard(character, version, {
-      disabled: busy,
-      onPromote: () => promoteProjectCharacterVersion(version.id),
-    }));
-  });
-
-  renderProjectCharacterReuse();
-}
-
-async function createProjectCharacter() {
-  const projectId = state.projectCharacters.projectId;
-  if (!projectId) return toast('Choose a project first.', 'error');
-  if (state.projectCharacters.saving) return;
-  state.projectCharacters.saving = true;
-  try {
-    const data = await api('/api/characters', {
-      method: 'POST',
-      body: { projectId, name: 'New character', description: '' },
-    });
-    upsertProjectCharacter(data.character);
-    state.projectCharacters.selectedId = data.character.id;
-    state.projectCharacters.formFor = '';
-    toast('Character added to this project. Name it and describe it, then generate.', 'success');
-  } catch (err) {
-    toast(err.message || 'Could not create the character.', 'error');
-  } finally {
-    state.projectCharacters.saving = false;
-    renderProjectCharacters();
-    const name = $('#project-character-name');
-    if (name && !$('#project-character-fields').classList.contains('hidden')) {
-      name.focus();
-      name.select();
-    }
-  }
-}
-
-async function saveProjectCharacter() {
-  const character = selectedProjectCharacter();
-  if (!character || state.projectCharacters.saving) return;
-  const name = $('#project-character-name').value.trim();
-  const description = $('#project-character-description').value.trim();
-  if (!name) return toast('Enter a character name.', 'error');
-  state.projectCharacters.saving = true;
-  try {
-    const data = await api(`/api/characters/${encodeURIComponent(character.id)}`, {
-      method: 'PUT',
-      body: { name, description },
-    });
-    upsertProjectCharacter(data.character);
-    toast('Character saved.', 'success');
-  } catch (err) {
-    toast(err.message || 'Could not save the character.', 'error');
-  } finally {
-    state.projectCharacters.saving = false;
-    renderProjectCharacters();
-  }
-}
-
-async function generateProjectCharacterImage() {
-  const character = selectedProjectCharacter();
-  if (!character || state.projectCharacters.generating) return;
-  const mode = $('#project-character-mode').value === 'sheet' ? 'sheet' : 'portrait';
-  const size = $('#project-character-size').value;
-  const description = $('#project-character-description').value.trim();
-  if (!description) return toast('Describe this character before generating.', 'error');
-
-  state.projectCharacters.generating = true;
-  const processId = startProcess(mode === 'sheet' ? 'Generating character sheet' : 'Generating character portrait');
-  renderProjectCharacters();
-  try {
-    if (description !== (character.description || '')) {
-      const saved = await api(`/api/characters/${encodeURIComponent(character.id)}`, {
-        method: 'PUT',
-        body: {
-          name: $('#project-character-name').value.trim() || character.name,
-          description,
-        },
-      });
-      upsertProjectCharacter(saved.character);
-    }
-    const data = await api(`/api/characters/${encodeURIComponent(character.id)}/generate`, {
-      method: 'POST',
-      body: { mode, size },
-    });
-    upsertProjectCharacter(data.character);
-    toast(mode === 'sheet' ? 'Character sheet generated.' : 'Portrait generated.', 'success');
-  } catch (err) {
-    handleMissingImageKey(err);
-    toast(err.message || 'Could not generate the character image.', 'error');
-  } finally {
-    finishProcess(processId);
-    state.projectCharacters.generating = false;
-    renderProjectCharacters();
-  }
-}
-
-async function promoteProjectCharacterVersion(versionId) {
-  const character = selectedProjectCharacter();
-  if (!character) return;
-  try {
-    const data = await api(
-      `/api/characters/${encodeURIComponent(character.id)}/versions/${encodeURIComponent(versionId)}/promote`,
-      { method: 'POST' }
-    );
-    upsertProjectCharacter(data.character);
-    toast('Version marked final.', 'success');
-  } catch (err) {
-    toast(err.message || 'Could not mark the version final.', 'error');
-  } finally {
-    renderProjectCharacters();
-  }
-}
-
-async function importMakerVersion() {
-  const character = selectedProjectCharacter();
-  const fromVersionId = $('#project-character-reuse').value;
-  if (!character) return;
-  if (!fromVersionId) return toast('No final Character maker image is available to copy.', 'error');
-  const processId = startProcess('Copying the final image into this project');
-  state.projectCharacters.generating = true;
-  renderProjectCharacters();
-  try {
-    const data = await api(`/api/characters/${encodeURIComponent(character.id)}/versions/import`, {
-      method: 'POST',
-      body: { fromVersionId },
-    });
-    upsertProjectCharacter(data.character);
-    toast('Final image copied into this project character.', 'success');
-  } catch (err) {
-    toast(err.message || 'Could not copy the image.', 'error');
-  } finally {
-    finishProcess(processId);
-    state.projectCharacters.generating = false;
-    renderProjectCharacters();
-  }
-}
-
-async function deleteProjectCharacter() {
-  const character = selectedProjectCharacter();
-  if (!character) return;
-  if (!confirm(`Delete "${character.name}" and all of its generated images from this project?`)) return;
-  try {
-    const data = await api(`/api/characters/${encodeURIComponent(character.id)}`, { method: 'DELETE' });
-    state.projectCharacters.items = Array.isArray(data.characters) ? data.characters : [];
-    state.projectCharacters.selectedId = state.projectCharacters.items.length
-      ? state.projectCharacters.items[0].id
-      : '';
-    state.projectCharacters.formFor = '';
-    toast('Character deleted.', 'success');
-  } catch (err) {
-    toast(err.message || 'Could not delete the character.', 'error');
-  } finally {
-    renderProjectCharacters();
-  }
-}
-
-$('#project-characters-project').addEventListener('change', (event) => {
-  state.projectCharacters.projectId = event.target.value;
-  state.projectCharacters.selectedId = '';
-  state.projectCharacters.formFor = '';
-  state.projectCharacters.items = [];
-  loadProjectCharacters({ force: true });
-});
-$('#project-character-new').addEventListener('click', createProjectCharacter);
-$('#project-character-save').addEventListener('click', saveProjectCharacter);
-$('#project-character-generate').addEventListener('click', generateProjectCharacterImage);
-$('#project-character-import').addEventListener('click', importMakerVersion);
-$('#project-character-delete').addEventListener('click', deleteProjectCharacter);
-$('#project-characters-retry').addEventListener('click', () => loadProjectCharacters({ force: true }));
 
 // ---------------------------------------------------------------------------
 // Standalone image generator
@@ -6273,7 +5106,7 @@ function renderStudioIdeaCard() {
   $('#studio-idea-text').value = project ? project.idea || '' : '';
   $('#studio-idea-description').value = project ? project.description || '' : '';
   $('#studio-idea-hint').textContent = project
-    ? 'The idea is what this story grew from; the brief above is its canonical root.'
+    ? 'Edit the title, idea, and description for this story.'
     : 'Choose a story above to write its idea.';
   $('#studio-idea-save').disabled = !project;
 }
@@ -6311,7 +5144,6 @@ function switchTab(name, options = {}) {
     projects: 'panel-projects',
     reference: 'panel-reference',
     characters: 'panel-characters',
-    'project-characters': 'panel-project-characters',
     'standalone-images': 'panel-standalone-images',
     story: 'panel-story',
     generation: 'panel-generation',
@@ -6326,7 +5158,6 @@ function switchTab(name, options = {}) {
   if (name === 'projects') renderProjects();
   if (name === 'reference') renderReferenceProjects();
   if (name === 'characters') loadCharacters();
-  if (name === 'project-characters') loadProjectCharacters();
   if (name === 'standalone-images') loadGenerator();
   if (name === 'story') renderStoryProjects();
   if (name === 'generation') renderGenerationProjects();

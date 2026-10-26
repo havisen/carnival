@@ -316,31 +316,11 @@ test('Character maker screen is reachable in the Generate Images module', () => 
   assert.match(css, /\.maker-layout/);
   assert.match(css, /\.maker-character\.active/);
 
-  // Story Studio no longer exposes the legacy project-character view.
+  // The retired screen is gone; the backend still preserves project-scoped data.
   assert.doesNotMatch(app, /id: 'studio-cast-images'/);
-  assert.match(html, /id="panel-project-characters" role="tabpanel"/);
-  assert.match(html, /id="project-characters-project"/);
-  assert.match(html, /id="project-character-list"/);
-  assert.match(html, /id="project-character-new"/);
-  assert.match(html, /id="project-character-name"/);
-  assert.match(html, /id="project-character-description"/);
-  assert.match(html, /id="project-character-mode"[\s\S]*value="sheet" selected[\s\S]*value="portrait"/);
-  assert.match(html, /id="project-character-size"/);
-  assert.match(html, /id="project-character-generate"/);
-  assert.match(html, /id="project-character-reuse"/);
-  assert.match(html, /id="project-character-import"/);
-  assert.match(html, /id="project-character-versions"/);
-  assert.match(html, /id="project-characters-retry"/);
-  assert.doesNotMatch(html, /Story Studio ▸ Characters &amp; Locations ▸ Character images/);
-
-  assert.match(app, /'project-characters': 'panel-project-characters'/);
-  assert.match(app, /if \(name === 'project-characters'\) loadProjectCharacters\(\)/);
-  assert.match(app, /async function loadProjectCharacters/);
-  assert.match(app, /projectCharacters: \{/);
-  assert.match(app, /\/api\/characters\?projectId=\$\{encodeURIComponent\(projectId\)\}/);
-  assert.match(app, /versions\/import/);
+  assert.doesNotMatch(html, /id="panel-project-characters"/);
+  assert.doesNotMatch(app, /state\.projectCharacters/);
   assert.match(app, /function characterVersionCard/);
-  assert.match(app, /resetProjectCharacters\(\);/);
 });
 
 test('Project characters stay scoped to their project and can reuse a maker image', async (t) => {

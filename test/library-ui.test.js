@@ -38,7 +38,7 @@ test('Library UI contract', () => {
   assert.match(html, /id="review-publication-approve"/);
   assert.match(html, /id="review-audit"/);
   assert.match(html, /id="review-compare"/);
-  assert.match(html, /id="story-sheet-character"/);
+  assert.match(html, /id="worksheet-character"/);
 
   assert.match(app, /library: 'panel-library'/);
   assert.match(app, /if \(name === 'library'\) loadLibrary\(\)/);
@@ -62,7 +62,7 @@ test('Library UI contract', () => {
 // Generation Stage step it must register a tracked process, otherwise the
 // floating bottom-right process widget never appears.
 test('Character sheet generation shows the process tracker', () => {
-  assert.match(app, /const processId = startProcess\('Generating character sheet'\)/);
+  assert.match(app, /startProcess\(mode === 'sheet' \? 'Generating character sheet' : 'Generating character portrait'\)/);
   assert.match(app, /startProcess\('Generating character reference sheet'\)/);
   assert.match(app, /startProcess\(`Generating \$\{characters\.length\} character reference sheet\(s\)`\)/);
   assert.match(app, /updateProcess\(processId, `Generating character sheet \$\{index\} of \$\{characters\.length\}`\)/);
