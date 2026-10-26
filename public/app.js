@@ -5569,11 +5569,7 @@ const MODULES = [
         icon: '🧑‍🎨',
         tab: 'story',
         step: 'cast',
-        hint: 'The cast, the places, the look, and the character sheets.',
-        views: [
-          { id: 'studio-cast-references', label: 'Story references', tab: 'story', step: 'cast' },
-          { id: 'studio-cast-images', label: 'Character images', tab: 'project-characters' },
-        ],
+        hint: 'The cast, the places, the look, and the character references.',
       },
       { id: 'studio-scenes', label: 'Scenes', icon: '🎬', tab: 'story', step: 'scenes', hint: 'The scene outline, the action references, and continuity.' },
       { id: 'studio-generate', label: 'Generate', icon: '🖼️', tab: 'generation', hint: 'Build one image prompt per action reference, then render every image.' },

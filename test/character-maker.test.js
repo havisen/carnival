@@ -316,9 +316,8 @@ test('Character maker screen is reachable in the Generate Images module', () => 
   assert.match(css, /\.maker-layout/);
   assert.match(css, /\.maker-character\.active/);
 
-  // Project character images are a view of the Characters & Locations step.
-  assert.match(app, /id: 'studio-cast-references', label: 'Story references', tab: 'story', step: 'cast'/);
-  assert.match(app, /id: 'studio-cast-images', label: 'Character images', tab: 'project-characters'/);
+  // Story Studio no longer exposes the legacy project-character view.
+  assert.doesNotMatch(app, /id: 'studio-cast-images'/);
   assert.match(html, /id="panel-project-characters" role="tabpanel"/);
   assert.match(html, /id="project-characters-project"/);
   assert.match(html, /id="project-character-list"/);
@@ -332,7 +331,7 @@ test('Character maker screen is reachable in the Generate Images module', () => 
   assert.match(html, /id="project-character-import"/);
   assert.match(html, /id="project-character-versions"/);
   assert.match(html, /id="project-characters-retry"/);
-  assert.match(html, /id="docs-project-characters"/);
+  assert.doesNotMatch(html, /Story Studio ▸ Characters &amp; Locations ▸ Character images/);
 
   assert.match(app, /'project-characters': 'panel-project-characters'/);
   assert.match(app, /if \(name === 'project-characters'\) loadProjectCharacters\(\)/);
