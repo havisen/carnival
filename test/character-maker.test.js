@@ -296,7 +296,7 @@ test('Character maker screen is reachable in the Generate Images module', () => 
   assert.match(html, /id="character-new"/);
   assert.match(html, /id="character-name"/);
   assert.match(html, /id="character-description"/);
-  assert.match(html, /id="character-mode"[\s\S]*value="portrait"[\s\S]*value="sheet"/);
+  assert.match(html, /id="character-mode"[\s\S]*value="sheet" selected[\s\S]*value="portrait"/);
   assert.match(html, /id="character-size"/);
   assert.match(html, /id="character-generate"/);
   assert.match(html, /id="character-versions"/);
@@ -324,7 +324,7 @@ test('Character maker screen is reachable in the Generate Images module', () => 
   assert.match(html, /id="project-character-new"/);
   assert.match(html, /id="project-character-name"/);
   assert.match(html, /id="project-character-description"/);
-  assert.match(html, /id="project-character-mode"[\s\S]*value="portrait"[\s\S]*value="sheet"/);
+  assert.match(html, /id="project-character-mode"[\s\S]*value="sheet" selected[\s\S]*value="portrait"/);
   assert.match(html, /id="project-character-size"/);
   assert.match(html, /id="project-character-generate"/);
   assert.match(html, /id="project-character-reuse"/);

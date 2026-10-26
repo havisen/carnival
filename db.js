@@ -194,6 +194,7 @@ for (const [column, definition] of [
   ['byteplus_api_key_enc', 'TEXT'],
   ['byteplus_api_key_hint', 'TEXT'],
   ['text_model', "TEXT NOT NULL DEFAULT 'deepseek-v4-pro'"],
+  ['text_provider', "TEXT NOT NULL DEFAULT 'deepseek'"],
   ['image_model', "TEXT NOT NULL DEFAULT 'dola-seedream-5-0-pro-260628'"],
   ['anthropic_api_key_enc', 'TEXT'],
   ['anthropic_api_key_hint', 'TEXT'],
@@ -230,7 +231,7 @@ const setBytePlusKeyStmt = db.prepare(
   'UPDATE users SET byteplus_api_key_enc = ?, byteplus_api_key_hint = ? WHERE id = ?'
 );
 const setAISettingsStmt = db.prepare(
-  'UPDATE users SET text_model = ?, image_model = ?, openai_image_provider = ? WHERE id = ?'
+  'UPDATE users SET text_model = ?, image_model = ?, openai_image_provider = ?, text_provider = ? WHERE id = ?'
 );
 const setAnthropicKeyStmt = db.prepare(
   'UPDATE users SET anthropic_api_key_enc = ?, anthropic_api_key_hint = ? WHERE id = ?'
@@ -269,8 +270,8 @@ function setUserBytePlusKey(userId, encrypted, hint) {
   return getUserById(userId);
 }
 
-function setUserAISettings(userId, textModel, imageModel, openAIImageProvider = getUserById(userId).openai_image_provider) {
-  setAISettingsStmt.run(textModel, imageModel, openAIImageProvider, userId);
+function setUserAISettings(userId, textModel, imageModel, openAIImageProvider = getUserById(userId).openai_image_provider, textProvider = getUserById(userId).text_provider) {
+  setAISettingsStmt.run(textModel, imageModel, openAIImageProvider, textProvider, userId);
   return getUserById(userId);
 }
 
@@ -314,6 +315,7 @@ const sessionStmt = db.prepare(`
          u.username, u.api_key_enc, u.api_key_hint,
          u.byteplus_api_key_enc, u.byteplus_api_key_hint,
          u.text_model, u.image_model, u.created_at,
+         u.text_provider,
          u.anthropic_api_key_enc, u.anthropic_api_key_hint,
          u.openai_api_key_enc, u.openai_api_key_hint, u.openai_base_url,
          u.openai_direct_api_key_enc, u.openai_direct_api_key_hint, u.openai_image_provider,

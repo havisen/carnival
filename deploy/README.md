@@ -66,3 +66,16 @@ Never restore another app's database or rewrite another Nginx site.
 
 Useful commands: systemctl status carnival; journalctl -u carnival;
 systemctl restart carnival; nginx -t; systemctl reload nginx.
+
+## Google Drive and saved CarniChat
+
+Follow [google-drive-setup.md](google-drive-setup.md) to configure the optional
+OAuth client. Each account connects its own Drive. Credentials are encrypted with
+the existing Carnival secret; never replace that secret during an update.
+
+CarniChat history, image attachments, text-provider preferences, and Drive
+connections live in the existing database and image directory. Runtime bundles
+must include conversations.js, drive.js, promptinsights.js, public/chat-models.js,
+and public/workspace-tools.js. Startup adds the new tables and preference column.
+Character versions are copied into private Library assets on Library access;
+their prompts are preserved, and final sheets are not automatically approved.

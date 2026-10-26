@@ -7,7 +7,7 @@ const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_STORED_CHARS = 256 * 1024;
 const REDACTED = '[redacted]';
 const sensitive = (key) => /^(authorization|proxyauthorization|cookie|setcookie|password|passwordhash|passwordsalt|apikey|key|token|sid|secret|appsecret|signature|sig)$/.test(String(key).replace(/[^a-z0-9]/gi, '').toLowerCase())
-  || /apikey|credential|signature|accesskey|secret|token$/i.test(key);
+  || /apikey|credential|signature|accesskey|secret|token$|^(?:code_verifier|code_challenge)$/i.test(key);
 
 function cleanUrl(value) {
   try {
@@ -16,7 +16,7 @@ function cleanUrl(value) {
     if (url.username) url.username = REDACTED;
     if (url.password) url.password = REDACTED;
     for (const key of url.searchParams.keys()) {
-      if (sensitive(key)) url.searchParams.set(key, REDACTED);
+      if (sensitive(key) || /^(?:code|state)$/i.test(key)) url.searchParams.set(key, REDACTED);
     }
     url.hash = '';
     return absolute ? url.href : url.pathname + url.search;
