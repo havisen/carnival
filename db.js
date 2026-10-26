@@ -93,10 +93,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, created_at DESC);
 `);
 
-// Phase 3 removes alternate text/image model choices. Normalize existing
-// preferences so old accounts cannot keep routing to retired models.
+// Normalize retired choices while preserving all supported provider models.
 db.prepare("UPDATE users SET text_model = 'deepseek-v4-pro' WHERE text_model <> 'deepseek-v4-pro'").run();
-db.prepare("UPDATE users SET image_model = 'dola-seedream-5-0-pro-260628' WHERE image_model <> 'dola-seedream-5-0-pro-260628'").run();
+const supportedImageModels = require('./public/image-models').map((model) => model.id);
+db.prepare(`UPDATE users SET image_model = 'dola-seedream-5-0-pro-260628' WHERE image_model NOT IN (${supportedImageModels.map(() => '?').join(',')})`).run(...supportedImageModels);
 
 // ---------------------------------------------------------------------------
 // Migrate projects created before the idea/stage fields and "Not Started"

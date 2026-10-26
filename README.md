@@ -138,7 +138,7 @@ $env:PORT=8080; node server.js
 4. Send selected ideas to **Project Management**. Projects are saved per user in
    the database, not in `localStorage`.
 5. For scene images, save a **BytePlus ModelArk API key** in **AI APIs**. Seedream
-   5.0 Pro is the only configured image model (1K, 1.5K, or 2K).
+   5.0 Pro uses your BytePlus key; GPT Image uses your saved OpenAI key. Choose an image model in Settings or the standalone generator.
 6. DeepSeek 4 Pro (`deepseek-v4-pro`) is the only configured text model.
 
 Your password is never stored in plaintext, and your API key is never sent back
@@ -360,6 +360,39 @@ modified. They are capped at 24 MB in total per request.
 **Prompt presets.** Save the current prompt under a name, then **Insert** it into
 the prompt box later. Presets are per user.
 
+### OpenAI image models
+
+Choose a model in the standalone generator or under **Settings → Default models**.
+The selection is shared by all image tools, including character sheets and story
+images. Save your OpenAI key under **OpenAI-compatible API** and leave the base
+URL as https://api.openai.com/v1 for OpenAI. A custom compatible endpoint must
+implement the Images API. Seedream still uses its separate BytePlus key.
+
+The shared catalog in public/image-models.js includes every active GPT Image ID
+listed in the official Images API reference on 2026-10-26:
+
+- gpt-image-2.5-sunburst and gpt-image-2.5-sunburst-2026-09-08
+- gpt-image-2.5-flare and gpt-image-2.5-flare-2026-09-08
+- gpt-image-2 and gpt-image-2-2026-04-21
+- gpt-image-1.5, gpt-image-1-mini, and chatgpt-image-latest
+
+GPT Image 1 and DALL-E are retired and cannot be selected. Account access and
+organization verification may be required by OpenAI. GPT Image sizes are square
+1024x1024, landscape 1536x1024, and portrait 1024x1536; Seedream keeps its own
+1K / 1.5K / 2K options. Quality is automatic and results are requested as PNG.
+Text-only requests use /images/generations; references are sent as multipart
+image[] files to /images/edits. GPT Image 1.5 references use high input fidelity.
+Each variation makes one request; provider failures never fall back to another
+provider or erase saved images, panel prompts, or attachments.
+
+Model preferences survive restarts. Per-user keys remain encrypted; the API
+receives only that user's selected provider key and a hashed safety identifier.
+Track keeps prompt/model metadata while omitting reference bytes and credentials.
+
+Sources: [Image generation](https://developers.openai.com/api/docs/guides/image-generation),
+[Images API](https://developers.openai.com/api/reference/resources/images/methods/generate),
+[Image edits](https://developers.openai.com/api/reference/resources/images/methods/edit).
+
 ### Every generated image is a Library asset
 
 Generation also registers the image in the [Library](#library-tab) through the
@@ -421,7 +454,7 @@ prompts does not overwrite reference material or the story workspace.
 
 Uploads accept PNG, JPEG, or WebP files up to 20 MB. Images are saved under
 `data/images/`, attached to the project, and served through an authenticated
-route. Image generation uses **Seedream 5.0 Pro** with the saved BytePlus key;
+route. Image generation uses the selected Seedream or GPT Image model with its matching saved provider key;
 Seedream 5.0 Pro supports 1K/1.5K/2K.
 
 ## Library tab
@@ -458,7 +491,7 @@ references.
 | `APP_SECRET` | auto-generated in `data/secret.key` | Key material used to encrypt API keys at rest. Use a long random value in production and keep it stable. |
 | `PUBLIC_ORIGIN` | unset | Optional exact browser origin, e.g. `https://app.example.com`. Useful when a reverse proxy rewrites `Host`; CSRF checks then compare against this value. |
 | `BYTEPLUS_IMAGE_ENDPOINT` | `https://ark.ap-southeast.bytepluses.com/api/v3/images/generations` | Seedream image-generation endpoint. |
-| `BYTEPLUS_IMAGE_MODEL` | `dola-seedream-5-0-pro-260628` | Fallback image model if a stored preference is unavailable; Seedream 5.0 Pro is the only supported model. |
+| `BYTEPLUS_IMAGE_MODEL` | `dola-seedream-5-0-pro-260628` | Fallback image model if a stored preference is unavailable. Supported model IDs are listed in public/image-models.js. |
 | `DATA_DIR` | `./data` | Directory for the database, secret, and generated images. |
 | `DB_PATH` | `<DATA_DIR>/app.db` | Explicit SQLite file path. |
 
@@ -662,7 +695,7 @@ process. Run one Node instance, or move to a shared database before scaling out.
 - No password reset or email verification (there is no email service).
 - No roles or sharing; every account sees only its own projects.
 - Generated ideas live in memory until you send them to Project Management.
-- Image generation requires a valid BytePlus key and available Seedream quota.
+- Image generation requires the key and quota for the selected provider: BytePlus for Seedream, or OpenAI for GPT Image.
 - Uploaded images are limited to 20 MB and PNG/JPEG/WebP.
 - Projects must be marked complete with **✓ Complete** to move to **Completed**.
 - DeepSeek 4 Pro (`deepseek-v4-pro`) and Seedream 5.0 Pro
