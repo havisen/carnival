@@ -3,5 +3,8 @@ HOST=127.0.0.1
 PORT=3100
 DATA_DIR=/var/lib/carnival
 PUBLIC_ORIGIN=https://carnival.carni.lol
+# Optional Google Drive OAuth web client (see google-drive-setup.md).
+# GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+# GOOGLE_CLIENT_SECRET=your-client-secret
 # Keep the existing APP_SECRET when migrating if one was explicitly configured.
 # Otherwise Carnival persists its encryption secret at DATA_DIR/secret.key.

@@ -25,6 +25,8 @@ test('trace snapshots redact credentials, signed URLs, and image data while reta
   assert.doesNotMatch(JSON.stringify(snapshot), /test-provider-key|test-session-token|test-password|private-signature|encoded-image-bytes|AAABBB|another-key/);
   assert.equal(snapshot.usage.input_tokens, 10);
   assert.equal(snapshot.usage.output_tokens, 4);
+  assert.doesNotMatch(cleanUrl('/api/drive/callback?code=private-oauth-code&state=private-oauth-state'), /private-oauth-code|private-oauth-state/);
+  assert.equal(sanitize({ code: 'UPSTREAM_BAD_JSON' }).code, 'UPSTREAM_BAD_JSON');
   assert.match(cleanUrl('/api/assets?api_key=hidden&projectId=p1'), /projectId=p1/);
   assert.doesNotMatch(cleanUrl('https://name:password@provider.example/path?token=hidden'), /password|hidden/);
   assert.equal(bodySnapshot('{bad JSON', secrets), '{bad JSON');

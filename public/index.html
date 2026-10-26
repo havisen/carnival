@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-26.5" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-26.6" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -107,14 +107,21 @@
               <button class="chat-mode" data-chat-mode="reviewer" type="button" role="tab" aria-selected="false">Reviewer</button>
             </div>
           </div>
+          <details class="chat-model-controls"><summary id="chat-model-summary">Chat model</summary>
+              <select id="chat-provider" aria-label="CarniChat provider"></select>
+              <input id="chat-model" list="chat-model-options" maxlength="100" aria-label="CarniChat model" placeholder="Model ID" />
+              <button class="btn btn-ghost btn-sm" id="chat-save-model" type="button">Use model</button>
+          </details>
           <div class="chat-pane" id="guide-chat-pane">
             <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
             <div class="chat-typing hidden" id="chat-typing">CarniChat is typing…</div>
+            <div id="chat-attachments" class="chat-attachments"></div>
+            <div class="chat-file-controls"><button class="btn btn-ghost btn-sm" id="chat-add-images" type="button">Add images</button><input id="chat-image-file" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" multiple /><button class="btn btn-ghost btn-sm" id="chat-clear-history" type="button">Clear chat</button></div>
             <form class="chat-input-row" id="chat-form" autocomplete="off">
               <input type="text" id="chat-input" maxlength="4000" placeholder="Ask CarniChat…" aria-label="Chat message" />
               <button class="btn btn-primary btn-sm" id="chat-send" type="submit">Send</button>
             </form>
-            <p class="hint chat-hint" id="chat-hint">Chat persists while this page stays open.</p>
+            <p class="hint chat-hint" id="chat-hint">Chat history is saved to your account.</p>
           </div>
 
           <div class="reviewer-pane hidden" id="reviewer-pane">
@@ -176,6 +183,15 @@
       <div class="module-progress-detail hidden" id="studio-progress-detail"></div>
     </div>
 
+    <details class="text-model-bar" id="text-model-bar"><summary>Text model: <span id="global-text-label">DeepSeek</span></summary><div class="model-picker">
+      <label>Text provider <select id="global-text-provider"></select></label>
+      <label>Model <input id="global-text-model" list="all-chat-model-options" maxlength="100" placeholder="Choose or enter a model ID" /></label>
+      <button class="btn btn-secondary btn-sm" id="global-save-model" type="button">Use for text tools</button>
+      <button class="btn btn-ghost btn-sm" id="refresh-chat-models" type="button">Refresh models</button>
+      <span class="hint" id="model-discovery-status"></span>
+    </div></details>
+    <datalist id="all-chat-model-options"></datalist><datalist id="chat-model-options"></datalist>
+    <datalist id="guide-model-options"></datalist><datalist id="reviewer-model-options"></datalist>
     <main>
       <!-- ============================================================ -->
       <!-- IDEA GENERATOR TAB                                            -->
@@ -187,7 +203,7 @@
             <div class="card">
               <h2 class="card-title">Model</h2>
               <label class="field">
-                <span class="field-label">DeepSeek model</span>
+                <span class="field-label">Chat model</span>
                 <input type="text" id="model" list="model-list" value="deepseek-v4-pro" spellcheck="false" />
                 <datalist id="model-list">
                   <option value="deepseek-v4-pro">DeepSeek 4 Pro</option>
@@ -333,7 +349,7 @@
                   </select>
                 </label>
                 <label class="field">
-                  <span class="field-label">DeepSeek model</span>
+                  <span class="field-label">Chat model</span>
                   <input type="text" id="ref-model" list="model-list" value="deepseek-v4-pro" maxlength="100" spellcheck="false" />
                 </label>
               </div>
@@ -342,8 +358,8 @@
                 <span class="field-label">Setting</span>
                 <input type="text" id="ref-setting" placeholder="Where and when does this take place?" maxlength="2000" />
               </label>
-              <button class="btn btn-secondary btn-sm ref-use-guide" id="ref-use-guide" type="button">Use guide</button>
-              <p class="hint ref-use-guide-hint">Ask the Guide to suggest a setting for the current reference project.</p>
+              <button class="btn btn-secondary btn-sm ref-use-guide" id="ref-use-guide" type="button">Use chat</button>
+              <p class="hint ref-use-guide-hint">Ask CarniChat to fill reference material, setting, and both character references. Review the suggestions, then save.</p>
             </div>
 
             <div class="card">
@@ -426,8 +442,8 @@
                 <label class="field inline">
                   <span class="field-label">Image type</span>
                   <select id="character-mode">
+                    <option value="sheet" selected>Character sheet (3 views)</option>
                     <option value="portrait">Portrait</option>
-                    <option value="sheet">Character sheet (3 views)</option>
                   </select>
                 </label>
                 <label class="field inline">
@@ -495,8 +511,8 @@
                 <label class="field inline">
                   <span class="field-label">Image type</span>
                   <select id="project-character-mode">
+                    <option value="sheet" selected>Character sheet (3 views)</option>
                     <option value="portrait">Portrait</option>
-                    <option value="sheet">Character sheet (3 views)</option>
                   </select>
                 </label>
                 <label class="field inline">
@@ -838,7 +854,7 @@
             </div>
             <div class="gen-prompt-controls">
               <label class="field inline">
-                <span class="field-label">DeepSeek model</span>
+                <span class="field-label">Chat model</span>
                 <input type="text" id="gen-model" list="model-list" value="deepseek-v4-pro" maxlength="100" spellcheck="false" />
               </label>
               <button class="btn btn-primary" id="gen-save-prompts" type="button">💾 Save image prompts</button>
@@ -913,7 +929,10 @@
       <!-- LIBRARY TAB                                                   -->
       <!-- ============================================================ -->
       <section class="panel" id="panel-library" role="tabpanel">
-        <div class="card library-head">
+        <nav class="library-tabs" aria-label="Library sections"><button class="btn btn-secondary" data-library-section="all" type="button">All images</button><button class="btn btn-ghost" data-library-section="sheets" type="button">Character sheets</button><button class="btn btn-ghost" data-library-section="analysis" type="button">Prompt analysis</button><button class="btn btn-ghost" data-library-section="drive" type="button">Google Drive</button></nav>
+        <section class="card hidden" id="library-analysis"><h2 class="card-title">Prompt analysis</h2><p class="hint">Compare saved prompts with recorded human image and project-prompt decisions. Awaiting review stays separate.</p><button class="btn btn-secondary" id="analyze-prompts" type="button">Analyze saved prompts</button><div id="prompt-analysis-output" role="status"></div></section>
+        <section class="card hidden" id="library-drive"><h2 class="card-title">Google Drive</h2><p id="drive-status" class="hint">Connect your account to save Library images and their prompt information to Drive.</p><button class="btn btn-primary" id="drive-connect" type="button">Connect Google Drive</button><button class="btn btn-ghost hidden" id="drive-disconnect" type="button">Disconnect</button><button class="btn btn-secondary" id="drive-list" type="button">Browse Carnival files</button><div id="drive-files"></div><details id="drive-setup"><summary>Connection setup</summary><p>Configure a Google Cloud web OAuth client, enable the Drive API, and add <code>https://carnival.carni.lol/api/drive/callback</code> as an authorized redirect URI. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the Carnival server, then restart Carnival. The connection uses drive.file access for files Carnival creates or the user grants to the app.</p></details></section>
+        <div id="library-image-content"><div class="card library-head">
           <div class="library-head-copy">
             <h2 class="card-title">Library</h2>
             <p class="hint">Visual index of images stored under <code>data/images</code>. Presence here does not mean an image is approved or cleared for publication.</p>
@@ -957,7 +976,7 @@
           <button class="btn btn-ghost btn-sm" id="library-clear-filters" type="button">Clear filters</button>
         </div>
 
-        <div class="library-grid" id="library-grid"></div>
+        <div class="library-grid" id="library-grid"></div></div>
       </section>
 
       <!-- ============================================================ -->
@@ -1110,11 +1129,10 @@
               <h2 class="card-title">Default models</h2>
               <label class="field">
                 <span class="field-label">Text generation</span>
-                <select id="text-model-pref">
-                  <option value="deepseek-v4-pro">DeepSeek 4 Pro — deepseek-v4-pro</option>
-                </select>
+                <select id="text-provider-pref" aria-label="Default text provider"></select>
+                <input id="text-model-pref" list="all-chat-model-options" maxlength="100" value="deepseek-v4-pro" />
               </label>
-              <p class="hint">Used for ideas, reference material, and scene prompts. DeepSeek 4 Pro is the only configured text model.</p>
+              <p class="hint">Used for ideas, reference material, worksheets, and scene prompts. Refresh models to load the lists available to your provider keys, or enter a model ID.</p>
 
               <label class="field">
                 <span class="field-label">Image generation</span>
@@ -1256,7 +1274,7 @@
 
         <div class="card" id="docs-overview">
           <h2 class="card-title">Overview</h2>
-          <p>Carnival turns a rough idea into a production-ready, photorealistic story. It uses DeepSeek for text generation, an image model (Seedream 5.0 Pro) for scene images, and your own API keys — which are encrypted at rest on the server and never sent back to the browser.</p>
+          <p>Carnival turns a rough idea into a production-ready, photorealistic story. It uses your selected chat provider for text and your selected image model for images, and your own API keys — which are encrypted at rest on the server and never sent back to the browser.</p>
           <p>Inside <strong>Story Studio</strong> the pipeline reads in this order:</p>
           <ol class="docs-list">
             <li><strong>Idea Generator</strong> (a shared service) — brainstorm concepts from a context.</li>
@@ -1328,7 +1346,7 @@
             <li>Add between <strong>1 and 4 characters</strong> (name + gender) and an optional <strong>setting</strong>.</li>
             <li>Click <strong>✨ Generate reference material</strong>.</li>
           </ol>
-          <p>Use <strong>Use guide</strong> under the Setting field to ask the Guide for a setting suggestion for the current reference project. The Guide opens automatically with the prompt filled in.</p>
+          <p>Use <strong>Use chat</strong> to send “Make a refrence, setting and character refrence for both the characters” to CarniChat. It suggests reference material, a setting, and both character references. Review the fields and click Save reference.</p>
           <p>DeepSeek returns human-readable reference material (7 numbered sections), a chronological scene outline, standalone character references, <em>and</em> a structured Story Workspace payload.</p>
           <div class="docs-callout docs-callout-note">
             <strong>Nothing is auto-approved.</strong> The structured drafts (brief, characters, locations, style, scenes) are created as <em>drafts awaiting review</em>. Regenerating will ask you to confirm before it replaces existing records.
@@ -1385,7 +1403,7 @@
           <h2 class="card-title">Generation</h2>
           <ol class="docs-list">
             <li>Choose a <strong>Generation Stage</strong> project. The References card shows the character references, the character reference sheets, the action references, and the location references, and names anything missing.</li>
-            <li>Click <strong>Build Image Prompts</strong> to write one image prompt per action reference with DeepSeek. The character references and character reference sheets are the same for every image, which keeps the characters consistent.</li>
+            <li>Click <strong>Build Image Prompts</strong> to write one image prompt per action reference with your selected text model. The character references and character reference sheets are the same for every image, which keeps the characters consistent.</li>
             <li><strong>Save</strong> the prompts or <strong>Generate again</strong>. Once saved, approve each prompt individually.</li>
             <li>Click <strong>Review the prompts</strong>. The reviewer compares every image prompt with the references and flags inconsistencies; each flag must be edited away or dismissed.</li>
             <li>Choose an image size and click <strong>Run image generation process</strong>. Every image is rendered one by one with its character reference sheets attached and filed into the project and the Library.</li>
@@ -1514,6 +1532,7 @@
             <h4>Prompt provenance</h4>
             <pre id="library-prompt"></pre>
           </div>
+          <button class="btn btn-secondary btn-sm" id="library-save-drive" type="button">Save image &amp; prompt to Google Drive</button>
         </div>
         <div class="library-organize">
           <h3>Organization</h3>
@@ -1694,7 +1713,9 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="image-models.js?v=2026-10-26.5"></script>
-  <script src="app.js?v=2026-10-26.5"></script>
+  <script src="image-models.js?v=2026-10-26.6"></script>
+  <script src="chat-models.js?v=2026-10-26.6"></script>
+  <script src="app.js?v=2026-10-26.6"></script>
+  <script src="workspace-tools.js?v=2026-10-26.6"></script>
 </body>
 </html>

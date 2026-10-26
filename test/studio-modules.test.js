@@ -371,7 +371,7 @@ test('Carnival module navigation contract holds', async () => {
   assert.ok(app.includes('initModuleNavigation();'), 'the navigation must be initialised on boot');
   assert.ok(app.includes('resetStudio();'), 'the navigation must reset when the session ends');
   assert.doesNotMatch(app, /\$\$\('\.tab'\)/, 'the removed tab bar must not still be wired');
-  assert.ok(app.includes('module: state.chat.mode === \'reviewer\' ? \'\' : state.ui.module'),
+  assert.ok(app.includes('module: mode === \'reviewer\' ? \'\' : state.ui.module'),
     'the assistant must be told which module the user is in');
 
   // The server scopes the Guide per module, without replacing the user's context.
@@ -381,7 +381,7 @@ test('Carnival module navigation contract holds', async () => {
   ['story-studio', 'generate-images'].forEach((id) => {
     assert.ok(guidance[1].includes(`'${id}':`), `the server has no guidance for ${id}`);
   });
-  assert.ok(server.includes('...(moduleId ? [MODULE_GUIDANCE[moduleId]] : []),'),
+  assert.ok(server.includes("moduleId ? MODULE_GUIDANCE[moduleId] : ''"),
     'module guidance must be added to the chat system prompt');
   assert.ok(server.includes("body.module === 'string' && MODULE_GUIDANCE[body.module]"),
     'only known modules may add guidance');

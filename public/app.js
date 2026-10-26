@@ -389,6 +389,7 @@ function showApp() {
   applyAiSettings();
   applyChatSettings();
   startSidebarTrackPolling();
+  if (typeof workspaceStarted === 'function') workspaceStarted();
 }
 
 function expireSession() {
@@ -854,9 +855,7 @@ const IMAGE_MODEL_LABELS = Object.fromEntries(CARNIVAL_IMAGE_MODELS.map((model) 
 const IMAGE_MODEL_SIZES = Object.fromEntries(CARNIVAL_IMAGE_MODELS.map((model) => [model.id, model.sizes]));
 
 function currentTextModel() {
-  return state.user && TEXT_MODEL_LABELS[state.user.textModel]
-    ? state.user.textModel
-    : 'deepseek-v4-pro';
+  return state.user?.textModel || 'deepseek-v4-pro';
 }
 
 function currentImageModel() {
@@ -943,6 +942,7 @@ function applyAiSettings() {
   const imageModel = currentImageModel();
 
   $('#text-model-pref').value = textModel;
+  if (typeof fillProviderOptions === 'function') fillProviderOptions($('#text-provider-pref'), state.user.textProvider || 'deepseek');
   $('#openai-image-provider').value = state.user.openAIImageProvider || 'openai-direct';
   applyImageModelOptions('#image-model-pref', imageModel);
   applyImageModelOptions('#generator-model', imageModel);
@@ -968,7 +968,7 @@ $('#save-ai-settings').addEventListener('click', async () => {
   try {
     const { user } = await api('/api/me/ai-settings', {
       method: 'PUT',
-      body: { textModel, imageModel, openAIImageProvider: $('#openai-image-provider').value },
+      body: { textModel, imageModel, textProvider: $('#text-provider-pref').value, openAIImageProvider: $('#openai-image-provider').value },
     });
     state.user = user;
     applyAiSettings();
@@ -1039,6 +1039,7 @@ function libraryFilteredImages() {
   const query = state.library.search.trim().toLowerCase();
   return state.library.images.filter((image) => {
     const metadata = image.metadata || {};
+    if (state.library.section === 'sheets' && image.source !== 'character-reference-sheet') return false;
     if (query && !`${image.name || ''} ${image.relativePath || ''} ${image.label || ''}`.toLowerCase().includes(query)) return false;
     if (filters.projectId && metadata.projectId !== filters.projectId) return false;
     if (filters.episodeId && metadata.episodeId !== filters.episodeId) return false;
@@ -1338,8 +1339,8 @@ function openLibraryDetail(id) {
 
   const promptBlock = $('#library-prompt-block');
   const prompt = $('#library-prompt');
-  if (typeof metadata.prompt === 'string' && metadata.prompt.trim()) {
-    prompt.textContent = metadata.prompt;
+  if (typeof (metadata.prompt || image.prompt) === 'string' && (metadata.prompt || image.prompt).trim()) {
+    prompt.textContent = metadata.prompt || image.prompt;
     promptBlock.classList.remove('hidden');
   } else {
     prompt.textContent = '';
@@ -1421,8 +1422,8 @@ function renderLibraryAssetDetail(asset) {
 
   const promptBlock = $('#library-prompt-block');
   const prompt = $('#library-prompt');
-  if (typeof metadata.prompt === 'string' && metadata.prompt.trim()) {
-    prompt.textContent = metadata.prompt;
+  if (typeof (metadata.prompt || asset.prompt) === 'string' && (metadata.prompt || asset.prompt).trim()) {
+    prompt.textContent = metadata.prompt || asset.prompt;
     promptBlock.classList.remove('hidden');
   } else {
     prompt.textContent = '';
@@ -1460,6 +1461,10 @@ function renderLibraryAssetDetail(asset) {
     const pathCode = document.createElement('code');
     pathCode.textContent = version.relativePath;
     row.append(label, meta, pathCode);
+    const promptInfo = document.createElement('details');
+    const promptLabel = document.createElement('summary'); promptLabel.textContent = 'Saved prompt';
+    const promptText = document.createElement('pre'); promptText.textContent = version.prompt || 'No generation prompt recorded for this version.';
+    promptInfo.append(promptLabel, promptText); row.appendChild(promptInfo);
     versions.appendChild(row);
   });
   if (!(asset.versions || []).length) versions.textContent = 'Not recorded';
@@ -2936,8 +2941,8 @@ async function generateStoryWorkspace(replace = false) {
   const projectId = state.story.projectId;
   if (!projectId) return toast('Choose a project first.', 'error');
   if (!state.user) return showAuth();
-  if (!state.user.hasApiKey) {
-    toast('Save your DeepSeek API key in Settings first.', 'error');
+  if (!hasTextApiKey()) {
+    toast('Save the selected text provider API key in Settings first.', 'error');
     switchTab('apis');
     return;
   }
@@ -3004,7 +3009,7 @@ async function generateWorksheetSheet(characterId, button, ownedProcessId) {
 async function generateWorksheetReferences(type) {
   const projectId = state.story.projectId;
   const button = $(`#worksheet-generate-${type}`);
-  if (!state.user?.hasApiKey) return toast('Save a DeepSeek API key in Settings first.', 'error');
+  if (!hasTextApiKey()) return toast('Save the selected text provider API key in Settings first.', 'error');
   button.disabled = true;
   try {
     const body = type === 'actions' ? { count: Number($('#worksheet-picture-count').value) } : {};
@@ -3381,6 +3386,7 @@ function renderSidebar() {
 }
 
 function resetSidebarAndChat() {
+  if (typeof workspaceReset === 'function') workspaceReset();
   state.sidebar.projectId = '';
   state.sidebar.story = null;
   state.sidebar.storyProjectId = '';
@@ -3917,7 +3923,14 @@ function renderChat() {
       const bubble = document.createElement('div');
       bubble.className = 'chat-bubble';
       bubble.textContent = m.content;
+      (m.attachments || []).forEach((attachment) => {
+        const image = document.createElement('img'); image.src = attachment.url; image.alt = attachment.name || 'Chat image'; image.className = 'chat-image'; bubble.appendChild(image);
+      });
       row.appendChild(bubble);
+      if (m.referenceDraft && m.projectId) {
+        const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'chat-copy'; apply.textContent = 'Apply to reference fields';
+        apply.addEventListener('click', () => applyReferenceChatDraft(m.referenceDraft, m.projectId)); row.appendChild(apply);
+      }
       if (state.chat.mode === 'guide' && m.role === 'assistant') {
         const copy = document.createElement('button');
         copy.type = 'button';
@@ -3945,12 +3958,14 @@ function renderChat() {
     btn.setAttribute('aria-selected', String(active));
   });
   if (reviewer) renderReviewer();
+  if (typeof renderWorkspaceChat === 'function') renderWorkspaceChat();
 }
 
 function switchChatMode(mode) {
   if (mode !== 'guide' && mode !== 'reviewer') return;
   if (mode === 'guide') closeReviewerDetails();
   state.chat.mode = mode;
+  if (typeof workspaceChatModelDirty !== 'undefined') workspaceChatModelDirty = false;
   if (mode === 'reviewer' && !state.reviewer.projectId) {
     const preferred = state.sidebar.projectId;
     if (state.projects.some((project) => project.id === preferred && project.status !== 'Done')) {
@@ -3960,48 +3975,44 @@ function switchChatMode(mode) {
   renderChat();
 }
 
-async function sendChat({ prompt = '', projectId = '', mode = state.chat.mode } = {}) {
-  const input = $('#chat-input');
-  const automatic = Boolean(prompt);
-  const text = (automatic ? prompt : input.value).trim();
-  if (!text || state.chat.busy) return;
-
-  if (mode !== state.chat.mode) switchChatMode(mode);
-  const messages = chatMessages();
-  messages.push({ role: 'user', content: text });
-  if (!automatic) input.value = '';
-  renderChat();
-
+async function sendChat({ prompt = '', projectId = '', mode = state.chat.mode, referenceRequest = false } = {}) {
   if (!state.user) return showAuth();
-  if (!guideHasCredentials()) {
-    messages.push({ role: 'assistant', content: 'Save the API key for the Guide provider in Settings first, then I can reply.' });
-    renderChat();
-    return;
-  }
-
-  setChatBusy(true);
+  if (state.chat.busy) return;
+  try { await ensureChatHistory(); } catch { return toast('Chat history could not load. Reconnect and try again.', 'error'); }
+  if (state.chat.busy) return;
+  const input = $('#chat-input'); const automatic = Boolean(prompt);
+  const text = (automatic ? prompt : input.value).trim();
+  const attachments = automatic ? [] : workspaceChatImages.slice();
+  if (!text && !attachments.length) return;
+  if (mode !== state.chat.mode) switchChatMode(mode);
+  if (!(mode === 'reviewer' ? reviewerHasCredentials() : guideHasCredentials())) return toast('Save the selected chat provider key in Settings first.', 'error');
+  const ownerId = state.user.id; const message = { id: crypto.randomUUID(), role: 'user', content: text, attachments };
+  const messages = chatMessages(); messages.push(message);
+  if (!automatic) { input.value = ''; workspaceChatImages = []; renderWorkspaceChat(); }
+  const referenceProjectId = projectId || state.sidebar.projectId || '';
+  const referenceInputs = referenceRequest ? referenceChatInputs() : null;
+  const fingerprint = JSON.stringify(referenceInputs);
+  renderChat(); setChatBusy(true);
+  const processId = startProcess(referenceRequest ? 'CarniChat is preparing all reference fields' : 'CarniChat is replying');
   try {
-    const data = await api('/api/chat', {
-      method: 'POST',
-      body: {
-        mode: state.chat.mode,
-        messages: messages.slice(-20),
-        projectId: projectId || state.sidebar.projectId || '',
-        // The active module scopes the assistant's guidance.
-        module: state.chat.mode === 'reviewer' ? '' : state.ui.module,
-      },
-    });
-    messages.push({ role: 'assistant', content: data.reply });
+    const data = await api('/api/chat', { method: 'POST', body: { mode, message,
+      projectId: referenceProjectId, module: mode === 'reviewer' ? '' : state.ui.module,
+      referenceRequest, referenceInputs } });
+    if (state.user?.id !== ownerId) return;
+    if (Array.isArray(data.messages)) state.chat[mode] = data.messages;
+    else messages.push({ role: 'assistant', content: data.reply });
+    if (data.referenceDraft && state.reference.projectId === referenceProjectId && JSON.stringify(referenceChatInputs()) === fingerprint) applyReferenceChatDraft(data.referenceDraft, referenceProjectId);
+    else if (referenceRequest && !data.referenceDraft) toast('CarniChat replied, but did not return all reference fields. Your existing fields were kept.', 'error');
     renderChat();
-  } catch (err) {
-    if (err.code === 'NO_API_KEY') {
-      state.user.hasApiKey = false;
-      renderKeyState();
-    }
-    messages.push({ role: 'assistant', content: err.message || 'Could not reach CarniChat.' });
-    renderChat();
+  } catch (error) {
+    if (state.user?.id !== ownerId) return;
+    // Keep the failed text and attachments ready for another attempt.
+    if (!automatic && !input.value) { input.value = text; workspaceChatImages = attachments; }
+    try { const saved = await api('/api/chat/history'); if (state.user?.id === ownerId) { state.chat.guide = saved.guide || []; state.chat.reviewer = saved.reviewer || []; } } catch {}
+    toast(error.message || 'Could not reach CarniChat.', 'error'); renderChat();
   } finally {
-    setChatBusy(false);
+    finishProcess(processId);
+    if (state.user?.id === ownerId) { setChatBusy(false); renderWorkspaceChat(); }
   }
 }
 
@@ -6413,8 +6424,8 @@ async function generateIdeas() {
   const numIdeas = Math.min(Math.max(parseInt($('#num-ideas').value, 10) || 5, 1), 50);
 
   if (!state.user) return showAuth();
-  if (!state.user.hasApiKey) {
-    toast('Save your DeepSeek API key in Settings first.', 'error');
+  if (!hasTextApiKey()) {
+    toast('Save the selected text provider API key in Settings first.', 'error');
     switchTab('apis');
     $('#api-key').focus();
     return;
@@ -6426,7 +6437,7 @@ async function generateIdeas() {
   $('#generate-label').textContent = 'Generating…';
   $('#generating').classList.remove('hidden');
   $('#generating-text').textContent = `Generating ${numIdeas} ideas…`;
-  $('#gen-hint').textContent = 'Calling DeepSeek with your saved key — this can take a few seconds.';
+  $('#gen-hint').textContent = 'Calling the selected text model with your saved key — this can take a few seconds.';
   const processId = startProcess('Generating ideas');
 
   try {
@@ -7066,6 +7077,7 @@ function setReferenceOutput(text, hasProject = Boolean(state.reference.projectId
 function selectReferenceProject(id) {
   const project = state.projects.find((p) => p.id === id) || null;
   state.reference.projectId = project ? project.id : null;
+  state.reference.chatDraft = null;
   state.reference.dirty = false;
   $('#ref-context').value = project ? project.idea || '' : '';
   setReferenceOutput(project ? project.referenceMaterial || '' : '', Boolean(project));
@@ -7171,8 +7183,8 @@ async function generateReference(replaceWorkspace = false) {
   const projectId = state.reference.projectId;
   if (!projectId) return toast('Select a Reference Stage project first.', 'error');
   if (!state.user) return showAuth();
-  if (!state.user.hasApiKey) {
-    toast('Save your DeepSeek API key in Settings first.', 'error');
+  if (!hasTextApiKey()) {
+    toast('Save the selected text provider API key in Settings first.', 'error');
     switchTab('apis');
     return;
   }
@@ -7205,7 +7217,7 @@ async function generateReference(replaceWorkspace = false) {
   setReferenceButtons(false);
   $('#ref-generate-label').textContent = 'Generating…';
   $('#ref-generating').classList.remove('hidden');
-  $('#ref-hint').textContent = 'Calling DeepSeek with your saved key — this can take a few seconds.';
+  $('#ref-hint').textContent = 'Calling the selected text model with your saved key — this can take a few seconds.';
   const processId = startProcess('Generating reference material');
   let retryReplaceWorkspace = false;
 
@@ -7275,7 +7287,9 @@ async function saveReferenceMaterial() {
   try {
     const { project } = await api(`/api/projects/${encodeURIComponent(projectId)}`, {
       method: 'PUT',
-      body: { referenceMaterial: $('#ref-output').value },
+      body: { referenceMaterial: $('#ref-output').value,
+        ...(state.reference.chatDraft ? { characterReferences: state.reference.chatDraft.characters.map((item, index) => ({ ...item,
+          name: state.reference.characters[index]?.name || item.name, gender: state.reference.characters[index]?.gender || item.gender })) } : {}) },
     });
     const index = state.projects.findIndex((p) => p.id === project.id);
     if (index >= 0) state.projects[index] = project;
@@ -7297,6 +7311,7 @@ $('#ref-project').addEventListener('change', (event) => {
 });
 
 $('#ref-character-count').addEventListener('change', (event) => {
+  state.reference.chatDraft = null;
   state.reference.count = Number(event.target.value) || 1;
   renderCharacterFields();
 });
@@ -7318,10 +7333,13 @@ $('#ref-use-guide').addEventListener('click', () => {
     toast('The Guide is still replying. Try again in a moment.', 'error');
     return;
   }
+  switchChatMode('guide');
+  setMobileSidebar(true);
   sendChat({
-    prompt: 'Create setting for the current reference project',
+    prompt: 'Make a refrence, setting and character refrence for both the characters',
     projectId: state.reference.projectId,
     mode: 'guide',
+    referenceRequest: true,
   });
 });
 $('#ref-output').addEventListener('input', () => {
