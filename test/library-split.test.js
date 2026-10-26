@@ -67,6 +67,7 @@ test('Library split saves four isolated derived assets atomically and preserves 
 
   // Force a mid-batch insert failure. No partial rows or discovered image files may survive.
   sqlite = new DatabaseSync(path.join(temp, 'app.db'));
+  sqlite.exec('PRAGMA busy_timeout = 5000');
   sqlite.exec("CREATE TRIGGER reject_split BEFORE INSERT ON assets WHEN NEW.title LIKE '%Bottom left' BEGIN SELECT RAISE(ABORT, 'Synthetic batch failure'); END");
   assert.equal((await request(endpoint, { method: 'POST', cookie: owner, body: form() })).status, 500);
   assert.equal((await library(owner)).length, 1);
