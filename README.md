@@ -329,16 +329,30 @@ tagged, or published.
 
 Prompt-to-image with **no project**, for one-off art, tests, and covers.
 
-1. Open **🖼 Standalone images** and write a **prompt** (subject, setting,
-   lighting, lens, mood, style).
-2. Choose an **image size** and how many **images** to generate (1–4). Multi-image
+1. Open **🖼 Standalone images**. Choose **Single image** and write a prompt, or
+   **Multi-panel image** and write a separate prompt for each panel. Choose a
+   four-panel 2 × 2 grid, two panels side by side, or two stacked panels. Optional
+   shared instructions define the common characters, lighting, and style.
+2. Choose an **image size** and how many **variations** to generate (1–4). Multi-image
    runs are sequential and each one appears in the gallery as it finishes, with
    the processing widget tracking `image 2 of 4`.
 3. Click **✨ Generate**.
 
+Each variation uses one provider call and produces one combined image containing
+all panels. Layout is guided by the image model, so exact framing may vary.
+The original panel prompts and layout are stored with the image; **Use prompts**
+restores them for editing. Failed requests leave the editor and references intact.
+Existing single-scene images remain readable after the additive storage migration.
+
+On phones and tablets, navigation scrolls horizontally, the editor fills the
+screen width, and **Assistant** opens a dismissible drawer for requests and chat.
+**Account** reveals the account controls. Inputs use readable mobile text sizes
+and controls have larger touch targets.
+
 **Reference images.** Attach up to 10 references so the result follows a
 character, place, or look: pick a **Library** image, a final **Character maker**
-image, or **upload** a file (PNG/JPEG/WebP, 20 MB). The server resolves each one
+image, or select several files with **Add reference photos** (PNG/JPEG/WebP, 20 MB
+per file). Thumbnails show which images are attached. The server resolves each one
 to a data URL and re-checks ownership, so a client can never name an image it
 does not own. Reference images are attached as visual guidance and are never
 modified. They are capped at 24 MB in total per request.

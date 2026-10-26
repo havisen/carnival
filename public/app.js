@@ -115,6 +115,12 @@ const state = {
     selectedPresetId: '',
     generating: false,
     maxReferences: 10,
+    mode: 'single',
+    layout: 'grid-2x2',
+    panels: ['', '', '', ''],
+    uploading: false,
+    uploadToken: 0,
+    runToken: 0,
   },
   story: {
     loaded: false,
@@ -4625,6 +4631,14 @@ $('#project-characters-retry').addEventListener('click', () => loadProjectCharac
 // workspace and the Library stays the place where images are reviewed.
 // ---------------------------------------------------------------------------
 function resetGenerator() {
+  state.generator.uploadToken += 1;
+  state.generator.runToken += 1;
+  state.generator.mode = 'single';
+  state.generator.layout = 'grid-2x2';
+  state.generator.panels = ['', '', '', ''];
+  state.generator.uploading = false;
+  $('#generator-prompt').value = '';
+  $('#generator-panels').dataset.layout = '';
   state.generator.loaded = false;
   state.generator.loading = false;
   state.generator.error = '';
@@ -4681,6 +4695,8 @@ function generatorHint() {
     return 'Save a BytePlus API key in Settings to generate images.';
   }
   if (state.generator.generating) return 'Generating…';
+  if (state.generator.uploading) return 'Uploading reference photos…';
+  if (state.generator.mode === 'panels') return 'Each variation is one combined image containing all panel prompts. Your references guide every panel.';
   return 'Every image you generate is saved here and added to the Library as an unassigned asset.';
 }
 
@@ -4726,7 +4742,7 @@ function renderGeneratorReferenceSources() {
   if (state.generator.libraryImages.some((image) => image.relativePath === previousLibrary)) {
     librarySelect.value = previousLibrary;
   }
-  $('#generator-reference-add-library').disabled = !librarySelect.value
+  $('#generator-reference-add-library').disabled = !librarySelect.value || state.generator.generating || state.generator.uploading
     || state.generator.references.length >= state.generator.maxReferences;
 
   const characterSelect = $('#generator-reference-character');
@@ -4747,7 +4763,7 @@ function renderGeneratorReferenceSources() {
   if (state.generator.characterSources.some(({ character, version }) => `${character.id}|${version.file}` === previousCharacter)) {
     characterSelect.value = previousCharacter;
   }
-  $('#generator-reference-add-character').disabled = !characterSelect.value
+  $('#generator-reference-add-character').disabled = !characterSelect.value || state.generator.generating || state.generator.uploading
     || state.generator.references.length >= state.generator.maxReferences;
 }
 
@@ -4772,6 +4788,8 @@ function renderGeneratorReferences() {
     remove.className = 'btn btn-secondary btn-sm';
     remove.textContent = '✕';
     remove.title = 'Remove this reference';
+    remove.setAttribute('aria-label', `Remove ${reference.name}`);
+    remove.disabled = state.generator.generating || state.generator.uploading;
     remove.addEventListener('click', () => {
       state.generator.references.splice(index, 1);
       renderGenerator();
@@ -4805,6 +4823,8 @@ function renderGeneratorGallery() {
 
     const img = document.createElement('img');
     img.className = 'generator-image';
+    img.loading = 'lazy';
+    img.decoding = 'async';
     img.src = generation.url;
     img.alt = generation.prompt.slice(0, 120);
     img.loading = 'lazy';
@@ -4816,7 +4836,9 @@ function renderGeneratorGallery() {
 
     const prompt = document.createElement('p');
     prompt.className = 'generator-prompt-text';
-    prompt.textContent = generation.prompt;
+    prompt.textContent = generation.composition
+      ? generation.composition.panels.map((text, index) => `${index + 1}. ${text}`).join('\n')
+      : generation.prompt;
     prompt.title = generation.prompt;
 
     if (generation.references && generation.references.length) {
@@ -4854,6 +4876,23 @@ function renderGeneratorGallery() {
     copy.addEventListener('click', () => copyToClipboard(generation.prompt, 'Prompt'));
     actions.appendChild(copy);
 
+    const reuse = document.createElement('button');
+    reuse.type = 'button';
+    reuse.className = 'btn btn-secondary btn-sm';
+    reuse.textContent = 'Use prompts';
+    reuse.disabled = state.generator.generating || state.generator.uploading;
+    reuse.addEventListener('click', () => {
+      const composition = generation.composition;
+      state.generator.mode = composition ? 'panels' : 'single';
+      state.generator.layout = composition ? composition.layout : 'grid-2x2';
+      state.generator.panels = composition ? [...composition.panels] : ['', '', '', ''];
+      $('#generator-prompt').value = composition ? composition.sharedPrompt : generation.prompt;
+      $('#generator-panels').dataset.layout = '';
+      renderGenerator();
+      $('.generator-editor').scrollIntoView({ block: 'start' });
+    });
+    actions.appendChild(reuse);
+
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'btn btn-secondary btn-sm';
@@ -4867,6 +4906,60 @@ function renderGeneratorGallery() {
   });
 }
 
+function generatorPanelPositions() {
+  return state.generator.layout === 'side-by-side' ? ['Left', 'Right']
+    : state.generator.layout === 'stacked' ? ['Top', 'Bottom']
+      : ['Top left', 'Top right', 'Bottom left', 'Bottom right'];
+}
+
+function renderGeneratorComposition() {
+  const multiple = state.generator.mode === 'panels';
+  const busy = state.generator.generating || state.generator.uploading;
+  document.querySelectorAll('[data-generator-mode]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.generatorMode === state.generator.mode));
+    button.disabled = busy;
+  });
+  $('#generator-layout-row').classList.toggle('hidden', !multiple);
+  $('#generator-panel-fields').classList.toggle('hidden', !multiple);
+  $('#generator-layout').value = state.generator.layout;
+  $('#generator-layout').disabled = busy;
+  $('#generator-prompt-label').textContent = multiple ? 'Shared instructions (optional)' : 'Prompt';
+  $('#generator-prompt').placeholder = multiple
+    ? 'Describe the characters, visual style, lighting, or details shared by every panel.'
+    : 'Describe the image: subject, setting, lighting, lens, mood, and style.';
+  $('#generator-prompt').rows = multiple ? 3 : 8;
+  $('#generator-prompt').disabled = busy;
+  const container = $('#generator-panels');
+  if (container.dataset.layout !== state.generator.layout) {
+    container.innerHTML = '';
+    const preview = $('#generator-layout-preview');
+    preview.innerHTML = '';
+    preview.className = `composition-preview layout-${state.generator.layout}`;
+    generatorPanelPositions().forEach((position, index) => {
+      const label = document.createElement('label');
+      label.className = 'field';
+      const heading = document.createElement('span');
+      heading.className = 'field-label';
+      heading.textContent = `Panel ${index + 1} · ${position}`;
+      const input = document.createElement('textarea');
+      input.id = `generator-panel-${index + 1}`;
+      input.rows = 4;
+      input.maxLength = 6000;
+      input.placeholder = 'Describe the scene, action, and framing for this panel.';
+      input.value = state.generator.panels[index] || '';
+      input.addEventListener('input', () => { state.generator.panels[index] = input.value; });
+      label.append(heading, input);
+      container.appendChild(label);
+      const cell = document.createElement('span');
+      cell.textContent = String(index + 1);
+      cell.title = position;
+      preview.appendChild(cell);
+    });
+    container.dataset.layout = state.generator.layout;
+  }
+  container.querySelectorAll('textarea').forEach((input) => { input.disabled = busy; });
+}
+
 function renderGenerator() {
   const panel = $('#panel-standalone-images');
   if (!panel) return;
@@ -4877,12 +4970,18 @@ function renderGenerator() {
 
   applyImageSizeOptions(currentImageModel(), '#generator-size');
 
-  const busy = state.generator.generating;
+  const busy = state.generator.generating || state.generator.uploading;
   $('#generator-generate').disabled = busy || !(state.user && state.user.hasBytePlusKey);
   $('#generator-count').disabled = busy;
   $('#generator-preset-save').disabled = busy;
-  $('#generator-reference-upload').disabled = busy;
+  $('#generator-reference-upload').disabled = busy || state.generator.references.length >= state.generator.maxReferences;
+  $('#generator-size').disabled = busy;
+  $('#generator-reference-file').disabled = busy;
+  $('#generator-reference-upload').textContent = state.generator.uploading ? 'Uploading photos…' : 'Add reference photos';
+  $('#generator-upload-status').textContent = state.generator.uploading
+    ? 'Please wait while your photos are uploaded.' : 'Choose one or several photos from your device.';
   $('#generator-hint').textContent = generatorHint();
+  renderGeneratorComposition();
 
   renderGeneratorPresets();
   renderGeneratorReferences();
@@ -4944,38 +5043,59 @@ function addCharacterReference() {
 
 async function uploadGeneratorReference() {
   const input = $('#generator-reference-file');
-  const file = input.files && input.files[0];
-  if (!file) return toast('Choose an image file to upload.', 'error');
-  const processId = startProcess('Uploading reference image');
-  try {
-    const response = await fetch(`/api/generation-references?name=${encodeURIComponent(file.name)}`, {
-      method: 'POST',
-      headers: { 'content-type': file.type || 'application/octet-stream' },
-      body: file,
-    });
-    const text = await response.text();
-    let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
-    if (!response.ok) throw new Error((data && data.error) || `Upload failed (${response.status}).`);
-    state.generator.uploads.unshift(data.reference);
-    if (state.generator.references.length >= state.generator.maxReferences) {
-      toast(`Uploaded, but ${state.generator.maxReferences} references are already attached.`, 'error');
-    } else {
-      state.generator.references.push({
-        kind: 'upload',
-        id: data.reference.id,
-        name: data.reference.name,
-        url: data.reference.url,
-      });
-      toast('Reference image attached.', 'success');
-    }
+  if (state.generator.generating || state.generator.uploading) return;
+  const files = Array.from(input.files || []);
+  if (!files.length) return input.click();
+  const remaining = state.generator.maxReferences - state.generator.references.length;
+  if (files.length > remaining) {
     input.value = '';
-  } catch (err) {
-    toast(err.message || 'Could not upload the reference image.', 'error');
+    return toast(`You can attach ${remaining} more reference photo${remaining === 1 ? '' : 's'}.`, 'error');
+  }
+  const invalid = files.find((file) => file.size > 20 * 1024 * 1024
+    || !(/^(image\/(png|jpeg|webp))$/.test(file.type) || (!file.type && /\.(png|jpe?g|webp)$/i.test(file.name))));
+  if (invalid) {
+    input.value = '';
+    return toast(`${invalid.name}: choose a PNG, JPEG, or WebP photo under 20 MB.`, 'error');
+  }
+  state.generator.uploading = true;
+  const uploadToken = ++state.generator.uploadToken;
+  const userId = state.user && state.user.id;
+  renderGenerator();
+  const processId = startProcess('Uploading reference photos');
+  let attached = 0;
+  try {
+    for (const [index, file] of files.entries()) {
+      if (state.generator.uploadToken !== uploadToken || !state.user || state.user.id !== userId) break;
+      updateProcess(processId, `Uploading photo ${index + 1} of ${files.length}`);
+      try {
+        const response = await fetch(`/api/generation-references?name=${encodeURIComponent(file.name)}`, {
+          method: 'POST',
+          headers: { 'content-type': file.type || 'application/octet-stream' },
+          body: file,
+        });
+        let data;
+        try { data = await response.json(); } catch (_) { data = null; }
+        if (state.generator.uploadToken !== uploadToken || !state.user || state.user.id !== userId) break;
+        if (!response.ok || !data || !data.reference) throw new Error((data && data.error) || `Upload failed (${response.status}).`);
+        state.generator.uploads.unshift(data.reference);
+        state.generator.references.push({ kind: 'upload', id: data.reference.id, name: data.reference.name, url: data.reference.url });
+        attached += 1;
+        renderGeneratorReferences();
+      } catch (err) {
+        if (state.generator.uploadToken === uploadToken && state.user && state.user.id === userId) {
+          toast(`${file.name}: ${err.message || 'Could not upload this reference photo.'}`, 'error');
+        }
+      }
+    }
+    if (state.generator.uploadToken === uploadToken) input.value = '';
   } finally {
     finishProcess(processId);
-    renderGenerator();
+    if (state.generator.uploadToken === uploadToken) {
+      state.generator.uploading = false;
+      renderGenerator();
+    }
   }
+  if (attached && state.generator.uploadToken === uploadToken) toast(`${attached} reference photo${attached === 1 ? '' : 's'} attached.`, 'success');
 }
 
 function insertGeneratorPreset() {
@@ -5025,26 +5145,40 @@ async function deleteGeneratorPreset() {
 
 async function generateImages() {
   const prompt = $('#generator-prompt').value.trim();
-  if (!prompt) return toast('Enter a prompt first.', 'error');
-  if (state.generator.generating) return;
+  if (state.generator.generating || state.generator.uploading) return;
+  const composition = state.generator.mode === 'panels'
+    ? { layout: state.generator.layout, panels: generatorPanelPositions().map((_, index) => (state.generator.panels[index] || '').trim()) }
+    : null;
+  if (composition) {
+    const missing = composition.panels.findIndex((text) => !text);
+    if (missing !== -1) {
+      $(`#generator-panel-${missing + 1}`).focus();
+      return toast(`Enter a prompt for panel ${missing + 1}.`, 'error');
+    }
+  } else if (!prompt) return toast('Enter a prompt first.', 'error');
   const size = $('#generator-size').value;
   const count = Math.min(4, Math.max(1, Number($('#generator-count').value) || 1));
   const references = generatorReferencePayload();
 
   state.generator.generating = true;
+  const runToken = ++state.generator.runToken;
+  const userId = state.user && state.user.id;
   renderGenerator();
   const processId = startProcess(count > 1 ? `Generating image 1 of ${count}` : 'Generating image');
   let done = 0;
   try {
     for (let index = 0; index < count; index += 1) {
+      if (state.generator.runToken !== runToken || !state.user || state.user.id !== userId) break;
       if (index > 0) updateProcess(processId, `Generating image ${index + 1} of ${count}`);
       try {
-        const data = await api('/api/generations', { method: 'POST', body: { prompt, size, references } });
+        const data = await api('/api/generations', { method: 'POST', body: { prompt, size, references, composition } });
+        if (state.generator.runToken !== runToken || !state.user || state.user.id !== userId) break;
         state.generator.generations.unshift(data.generation);
         if (data.libraryWarning) toast(data.libraryWarning, 'error');
         done += 1;
         renderGeneratorGallery();
       } catch (err) {
+        if (state.generator.runToken !== runToken || !state.user || state.user.id !== userId) break;
         if (err.code === 'NO_IMAGEGEN_KEY') {
           state.user.hasBytePlusKey = false;
           renderBytePlusKeyState();
@@ -5055,10 +5189,12 @@ async function generateImages() {
     }
   } finally {
     finishProcess(processId);
-    state.generator.generating = false;
-    renderGenerator();
+    if (state.generator.runToken === runToken) {
+      state.generator.generating = false;
+      renderGenerator();
+    }
   }
-  if (done) toast(`${done} image${done === 1 ? '' : 's'} generated.`, 'success');
+  if (done && state.generator.runToken === runToken) toast(`${done} image${done === 1 ? '' : 's'} generated.`, 'success');
 }
 
 async function deleteGeneration(generation) {
@@ -5100,11 +5236,85 @@ $('#generator-preset').addEventListener('change', (event) => {
 $('#generator-reference-add-library').addEventListener('click', addLibraryReference);
 $('#generator-reference-add-character').addEventListener('click', addCharacterReference);
 $('#generator-reference-upload').addEventListener('click', uploadGeneratorReference);
+$('#generator-reference-file').addEventListener('change', uploadGeneratorReference);
+$('#generator-mode').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-generator-mode]');
+  if (!button || state.generator.generating || state.generator.uploading) return;
+  state.generator.mode = button.dataset.generatorMode;
+  renderGenerator();
+});
+$('#generator-layout').addEventListener('change', (event) => {
+  state.generator.layout = event.target.value;
+  renderGeneratorComposition();
+});
 
 // ---------------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// Mobile navigation: keep the assistant available without shrinking the editor.
+const mobileNavigationQuery = window.matchMedia('(max-width: 900px), (max-width: 1024px) and (max-height: 500px)');
+let sidebarPreviousFocus = null;
+
+function setMobileAccount(open) {
+  $('.app-header').classList.toggle('account-open', open);
+  $('#account-toggle').setAttribute('aria-expanded', String(open));
+}
+
+function setMobileSidebar(open) {
+  const visible = open && mobileNavigationQuery.matches;
+  const wasOpen = document.body.classList.contains('sidebar-open');
+  const sidebar = $('#sidebar');
+  if (visible && !wasOpen) sidebarPreviousFocus = document.activeElement;
+  document.body.classList.toggle('sidebar-open', visible);
+  $('#sidebar-toggle').setAttribute('aria-expanded', String(visible));
+  $('.app-header').inert = visible;
+  $('.workspace').inert = visible;
+  if (visible) {
+    setMobileAccount(false);
+    sidebar.setAttribute('role', 'dialog');
+    sidebar.setAttribute('aria-modal', 'true');
+    sidebar.setAttribute('aria-label', 'Assistant and AI requests');
+    requestAnimationFrame(() => {
+      if (document.body.classList.contains('sidebar-open')) $('#sidebar-close').focus({ preventScroll: true });
+    });
+  } else {
+    sidebar.removeAttribute('role');
+    sidebar.removeAttribute('aria-modal');
+    if (wasOpen && sidebarPreviousFocus && sidebarPreviousFocus.isConnected) sidebarPreviousFocus.focus();
+    sidebarPreviousFocus = null;
+  }
+}
+
+$('#sidebar-toggle').addEventListener('click', () => setMobileSidebar(true));
+$('#sidebar-close').addEventListener('click', () => setMobileSidebar(false));
+$('#sidebar-backdrop').addEventListener('click', () => setMobileSidebar(false));
+$('#account-toggle').addEventListener('click', () => setMobileAccount(!$('.app-header').classList.contains('account-open')));
+mobileNavigationQuery.addEventListener('change', () => {
+  setMobileSidebar(false);
+  setMobileAccount(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    setMobileSidebar(false);
+    setMobileAccount(false);
+  }
+  if (event.key !== 'Tab' || !document.body.classList.contains('sidebar-open')) return;
+  if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
+  const focusable = Array.from($('#sidebar').querySelectorAll('a[href], button, input, select, textarea, [tabindex]'))
+    .filter((element) => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first) return;
+  if (!$('#sidebar').contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return;
+  }
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+
 // Carnival modules
 //
 // Carnival is the umbrella. Every screen lives in a module: Story Studio (one
@@ -5675,6 +5885,8 @@ function applyLibraryModuleDefault() {
 function switchScreen(screenId) {
   const screen = screenById(screenId);
   if (!screen) return;
+  setMobileSidebar(false);
+  setMobileAccount(false);
   state.ui.shared = screen.shared ? screen.id : '';
   if (!screen.shared) {
     state.ui.module = screen.moduleId;
@@ -5700,6 +5912,7 @@ function switchScreen(screenId) {
 // A direct switchTab() call (from anywhere in the app) lands on the screen that
 // owns that panel, so the module navigation never disagrees with the view.
 function adoptTabInNavigation(tab) {
+  setMobileSidebar(false);
   const screens = allScreens().filter((screen) => !screen.shared && screen.tab === tab);
   if (!screens.length) {
     renderNavigation();
@@ -5804,6 +6017,8 @@ function initModuleNavigation() {
 }
 
 function resetStudio() {
+  setMobileSidebar(false);
+  setMobileAccount(false);
   state.ui.module = MODULES[0].id;
   state.ui.screen = MODULES[0].screens[0].id;
   state.ui.view = '';

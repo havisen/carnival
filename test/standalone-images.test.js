@@ -51,6 +51,7 @@ async function waitForHealth(url, timeoutMs = 8000) {
 
 function createImageMock() {
   const calls = [];
+  let rejectStatus = 0;
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
@@ -58,6 +59,12 @@ function createImageMock() {
       let body = null;
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (_) { body = null; }
       calls.push(body);
+      if (rejectStatus) {
+        res.writeHead(rejectStatus, { 'content-type': 'application/json' });
+        rejectStatus = 0;
+        res.end(JSON.stringify({ error: { message: 'Synthetic provider failure' } }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ data: [{ b64_json: PNG.toString('base64'), output_format: 'png', size: '2K' }] }));
     });
@@ -65,6 +72,7 @@ function createImageMock() {
   return {
     calls,
     server,
+    rejectNext: (status = 502) => { rejectStatus = status; },
     listen: () => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)),
   };
 }
@@ -413,6 +421,10 @@ test('Standalone image generator screen is reachable in the Generate Images modu
   assert.match(html, /id="generator-reference-file"[\s\S]*id="generator-reference-upload"/);
   assert.match(html, /id="generator-reference-chips"/);
   assert.match(html, /id="generator-gallery"/);
+  assert.match(html, /id="generator-mode"/);
+  assert.match(html, /id="generator-layout"/);
+  assert.match(html, /id="generator-panels"/);
+  assert.match(html, /id="generator-reference-file"[^>]*multiple/);
   assert.match(html, /id="generator-retry"/);
   assert.match(html, /id="docs-generator"/);
 
@@ -434,6 +446,70 @@ test('Standalone image generator screen is reachable in the Generate Images modu
 
   assert.match(css, /\.generator-card/);
   assert.match(css, /\.generator-chip/);
+});
+
+test('multi-panel generation makes one provider call, attaches references, and preserves saved work on failure', async (t) => {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'standalone-panels-'));
+  const mock = createImageMock();
+  await mock.listen();
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  const child = startServer(workDir, {
+    PORT: String(port),
+    BYTEPLUS_IMAGE_ENDPOINT: `http://127.0.0.1:${mock.server.address().port}/images/generations`,
+  });
+  t.after(async () => {
+    await stopServer(child);
+    await new Promise((resolve) => mock.server.close(resolve));
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+  await waitForHealth(base);
+  const request = makeRequest(base);
+  const cookie = await register(request, 'panel-owner');
+  const other = await register(request, 'panel-other');
+  await request('/api/me/byteplus-key', { method: 'PUT', cookie, body: { apiKey: 'bp-test-panels-synthetic-123456' } });
+  const references = [];
+  for (let index = 0; index < 2; index += 1) {
+    const upload = await request(`/api/generation-references?name=reference-${index}.png`, {
+      method: 'POST', cookie, raw: PNG, contentType: 'image/png',
+    });
+    assert.equal(upload.status, 201);
+    references.push({ kind: 'upload', id: upload.data.reference.id });
+  }
+  const composition = { layout: 'grid-2x2', panels: ['Kitchen scene', 'Cafe scene', 'Sofa scene', 'Breakfast scene'] };
+  let result = await request('/api/generations', {
+    method: 'POST', cookie, body: { prompt: 'Natural light', composition, references, size: '2K' },
+  });
+  assert.equal(result.status, 201, JSON.stringify(result.data));
+  assert.equal(mock.calls.length, 1, 'all panels use one provider call');
+  assert.equal(mock.calls[0].image.length, 2, 'both references reach the provider');
+  assert.match(mock.calls[0].prompt, /Panel 1 — Top left:[\s\S]*Kitchen scene[\s\S]*Panel 4 — Bottom right:[\s\S]*Breakfast scene/);
+  const saved = result.data.generation;
+  assert.deepEqual(saved.composition, { ...composition, sharedPrompt: 'Natural light' });
+  result = await request('/api/generations', { cookie });
+  assert.deepEqual(result.data.generations[0].composition, saved.composition);
+  result = await request('/api/generations', { cookie: other });
+  assert.deepEqual(result.data.generations, []);
+  for (const bad of [
+    { ...composition, layout: '__proto__' },
+    { ...composition, panels: ['one', 'two'] },
+    { ...composition, panels: ['one', '', 'three', 'four'] },
+  ]) {
+    result = await request('/api/generations', { method: 'POST', cookie, body: { composition: bad } });
+    assert.equal(result.status, 400, JSON.stringify(result.data));
+  }
+  const foreignUpload = await request('/api/generation-references', { method: 'POST', cookie: other, raw: PNG });
+  result = await request('/api/generations', { method: 'POST', cookie,
+    body: { composition, references: [{ kind: 'upload', id: foreignUpload.data.reference.id }] } });
+  assert.equal(result.status, 404);
+  assert.equal(mock.calls.length, 1, 'invalid panels and foreign references cannot trigger paid calls');
+  mock.rejectNext();
+  result = await request('/api/generations', { method: 'POST', cookie, body: { composition, references } });
+  assert.equal(result.status, 502);
+  result = await request('/api/generations', { cookie });
+  assert.equal(result.data.generations.length, 1);
+  assert.deepEqual(result.data.generations[0].composition, saved.composition);
+  assert.equal((await rawBytes(base, saved.url, cookie)).status, 200);
 });
 
 test('Standalone image generator requires a signed-in user', async (t) => {

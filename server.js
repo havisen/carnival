@@ -16,6 +16,7 @@ const reviewStore = require('./reviews').init(db.db, storyStore, db.DB_PATH);
 const fieldReviewStore = require('./fieldreviews').init(db.db);
 const characterStore = require('./characters').init(db.db);
 const standaloneStore = require('./standalone').init(db.db);
+const { prepareImagePrompt } = require('./imagecomposition');
 const { init: initApiUsage, normalizeUsage } = require('./apiusage');
 const apiUsageStore = initApiUsage(db.db);
 const requestTracker = require('./track').init(db.db);
@@ -4368,10 +4369,14 @@ async function handleGenerationCreate(req, res) {
   const allowedSizes = IMAGE_MODEL_SIZES.get(imageModel);
   const defaultSize = allowedSizes.includes('2K') ? '2K' : allowedSizes[0];
 
-  const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+  let prompt;
+  let composition;
+  try {
+    ({ prompt, composition } = prepareImagePrompt(body.prompt, body.composition));
+  } catch (err) {
+    generationFail(err);
+  }
   const size = typeof body.size === 'string' && body.size.trim() ? body.size.trim() : defaultSize;
-  if (!prompt) fail(400, 'Enter a prompt first.');
-  if (prompt.length > 30000) fail(400, 'Image prompt is too long (max 30,000 characters).');
   if (!allowedSizes.includes(size)) {
     fail(400, `Invalid image size for this model. Choose ${allowedSizes.join(', ')}.`);
   }
@@ -4401,7 +4406,7 @@ async function handleGenerationCreate(req, res) {
       source: 'generated',
       model: imageModel,
       prompt,
-      title: generationTitle(prompt),
+      title: generationTitle(composition ? composition.panels[0] : prompt),
     });
   } catch (_) {
     recorded = null;
@@ -4420,6 +4425,7 @@ async function handleGenerationCreate(req, res) {
       assetId: recorded ? recorded.assetId : '',
       assetVersionId: recorded ? recorded.versionId : '',
       references: saved,
+      composition,
     });
   } catch (err) {
     generationFail(err);
