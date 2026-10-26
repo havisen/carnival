@@ -115,6 +115,7 @@ const state = {
     selectedPresetId: '',
     generating: false,
     maxReferences: 10,
+    savingModel: false,
     mode: 'single',
     layout: 'grid-2x2',
     panels: ['', '', '', ''],
@@ -590,6 +591,7 @@ function renderBytePlusKeyState() {
   status.textContent = saved ? 'BytePlus: connected' : 'BytePlus: no key';
   status.classList.toggle('connected', saved);
   status.classList.toggle('missing', !saved);
+  refreshImageTools();
 }
 
 $('#bp-toggle-key').addEventListener('click', () => {
@@ -701,6 +703,7 @@ function renderOpenAIKeyState() {
   $('#openai-key-label').textContent = saved ? 'Replace OpenAI-compatible API key' : 'Add OpenAI-compatible API key';
   $('#openai-save-key').textContent = saved ? 'Update key' : 'Save key';
   $('#openai-remove-key').classList.toggle('hidden', !saved);
+  refreshImageTools();
 }
 
 $('#openai-toggle-key').addEventListener('click', () => {
@@ -801,12 +804,8 @@ $('#save-chat-settings').addEventListener('click', async () => {
 const TEXT_MODEL_LABELS = {
   'deepseek-v4-pro': 'DeepSeek 4 Pro',
 };
-const IMAGE_MODEL_LABELS = {
-  'dola-seedream-5-0-pro-260628': 'Seedream 5.0 Pro',
-};
-const IMAGE_MODEL_SIZES = {
-  'dola-seedream-5-0-pro-260628': ['1K', '1.5K', '2K'],
-};
+const IMAGE_MODEL_LABELS = Object.fromEntries(CARNIVAL_IMAGE_MODELS.map((model) => [model.id, model.label]));
+const IMAGE_MODEL_SIZES = Object.fromEntries(CARNIVAL_IMAGE_MODELS.map((model) => [model.id, model.sizes]));
 
 function currentTextModel() {
   return state.user && TEXT_MODEL_LABELS[state.user.textModel]
@@ -818,6 +817,54 @@ function currentImageModel() {
   return state.user && IMAGE_MODEL_LABELS[state.user.imageModel]
     ? state.user.imageModel
     : 'dola-seedream-5-0-pro-260628';
+}
+
+function imageProviderLabel() {
+  return CARNIVAL_IMAGE_MODELS.find((model) => model.id === currentImageModel())?.provider === 'openai' ? 'OpenAI' : 'BytePlus';
+}
+
+function hasImageApiKey() {
+  return Boolean(state.user && (imageProviderLabel() === 'OpenAI' ? state.user.hasOpenAIKey : state.user.hasBytePlusKey));
+}
+
+function handleMissingImageKey(error) {
+  if (!state.user) return;
+  if (error.code === 'NO_OPENAI_IMAGE_KEY') {
+    state.user.hasOpenAIKey = false;
+    renderOpenAIKeyState();
+  } else if (error.code === 'NO_IMAGEGEN_KEY') {
+    state.user.hasBytePlusKey = false;
+    renderBytePlusKeyState();
+  }
+}
+
+function applyImageModelOptions(selector, selected = currentImageModel()) {
+  const select = $(selector);
+  if (!select) return;
+  if (!select.dataset.catalogReady) {
+    select.innerHTML = '';
+    for (const provider of ['byteplus', 'openai']) {
+      const group = document.createElement('optgroup');
+      group.label = provider === 'openai' ? 'OpenAI · GPT Image' : 'BytePlus · Seedream';
+      CARNIVAL_IMAGE_MODELS.filter((model) => model.provider === provider).forEach((model) => {
+        const option = document.createElement('option');
+        option.value = model.id;
+        option.textContent = model.label;
+        group.appendChild(option);
+      });
+      select.appendChild(group);
+    }
+    select.dataset.catalogReady = 'true';
+  }
+  select.value = selected;
+}
+
+function refreshImageTools() {
+  if (!state.user) return;
+  applyAiSettings();
+  if (state.generator.loaded) renderGenerator();
+  if (state.characters.loaded) renderCharacters();
+  if (state.projectCharacters.loaded) renderProjectCharacters();
 }
 
 function applyImageSizeOptions(imageModel, selector = '#gen-image-size') {
@@ -841,7 +888,8 @@ function applyAiSettings() {
   const imageModel = currentImageModel();
 
   $('#text-model-pref').value = textModel;
-  $('#image-model-pref').value = imageModel;
+  applyImageModelOptions('#image-model-pref', imageModel);
+  applyImageModelOptions('#generator-model', imageModel);
   ['#model', '#ref-model', '#gen-model'].forEach((selector) => {
     const input = $(selector);
     if (input) input.value = textModel;
@@ -852,6 +900,8 @@ function applyAiSettings() {
   $('#gen-image-model-label').textContent = IMAGE_MODEL_LABELS[imageModel] || imageModel;
   applyImageSizeOptions(imageModel);
   applyImageSizeOptions(imageModel, '#character-size');
+  applyImageSizeOptions(imageModel, '#project-character-size');
+  applyImageSizeOptions(imageModel, '#generator-size');
 }
 
 $('#save-ai-settings').addEventListener('click', async () => {
@@ -2626,8 +2676,8 @@ async function generateStorySheet() {
   const characterId = state.story.sheetCharacterId;
   if (!characterId) return toast('Add or choose a character first.', 'error');
   if (!state.user) return showAuth();
-  if (!state.user.hasBytePlusKey) {
-    toast('Save your BytePlus API key in Settings first.', 'error');
+  if (!hasImageApiKey()) {
+    toast(`Save your ${imageProviderLabel()} API key in Settings to generate images.`, 'error');
     switchTab('apis');
     return;
   }
@@ -2643,10 +2693,7 @@ async function generateStorySheet() {
     refreshSidebarStory(true);
     toast('Character sheet image generated.', 'success');
   } catch (err) {
-    if (err.code === 'NO_IMAGEGEN_KEY') {
-      state.user.hasBytePlusKey = false;
-      renderBytePlusKeyState();
-    }
+    handleMissingImageKey(err);
     toast(err.message || 'Could not generate the character sheet.', 'error');
   } finally {
     finishProcess(processId);
@@ -2785,7 +2832,7 @@ async function generateStoryWorkspace(replace = false) {
 // The caller may pass its own processId so a batch run keeps one tracker row
 // for the whole batch instead of one per character.
 async function generateWorksheetSheet(characterId, button, ownedProcessId) {
-  if (!state.user?.hasBytePlusKey) return toast('Save a BytePlus API key in Settings first.', 'error');
+  if (!hasImageApiKey()) return toast(`Save your ${imageProviderLabel()} API key in Settings to generate images.`, 'error');
   const processId = ownedProcessId || startProcess('Generating character reference sheet');
   button.disabled = true;
   try {
@@ -4008,14 +4055,14 @@ function renderCharacterEditor() {
     $('#character-description').value = character.description || '';
   }
 
-  const hasKey = Boolean(state.user && state.user.hasBytePlusKey);
+  const hasKey = hasImageApiKey();
   $('#character-generate').disabled = state.characters.generating || !hasKey;
   $('#character-save').disabled = state.characters.saving || state.characters.generating;
   remove.disabled = state.characters.generating;
   $('#character-hint').textContent = state.characters.generating
     ? 'Generating…'
     : !hasKey
-      ? 'Save a BytePlus API key in Settings to generate images.'
+      ? `Save your ${imageProviderLabel()} API key in Settings to generate images.`
       : character.description.trim()
         ? 'The description drives the image. Generate again to add another version.'
         : 'Describe this character, then generate an image.';
@@ -4163,10 +4210,7 @@ async function generateCharacterImage() {
     upsertCharacter(data.character);
     toast(mode === 'sheet' ? 'Character sheet generated. Add another or make it final.' : 'Portrait generated. Add another or make it final.', 'success');
   } catch (err) {
-    if (err.code === 'NO_IMAGEGEN_KEY' || err.status === 409) {
-      state.user.hasBytePlusKey = false;
-      renderBytePlusKeyState();
-    }
+    handleMissingImageKey(err);
     toast(err.message || 'Could not generate the character image.', 'error');
   } finally {
     finishProcess(processId);
@@ -4429,7 +4473,7 @@ function renderProjectCharacterEditor() {
     $('#project-character-description').value = character.description || '';
   }
 
-  const hasKey = Boolean(state.user && state.user.hasBytePlusKey);
+  const hasKey = hasImageApiKey();
   const busy = state.projectCharacters.generating;
   $('#project-character-generate').disabled = busy || !hasKey;
   $('#project-character-save').disabled = busy || state.projectCharacters.saving;
@@ -4437,7 +4481,7 @@ function renderProjectCharacterEditor() {
   $('#project-character-hint').textContent = busy
     ? 'Generating…'
     : !hasKey
-      ? 'Save a BytePlus API key in Settings to generate images.'
+      ? `Save your ${imageProviderLabel()} API key in Settings to generate images.`
       : character.description.trim()
         ? 'The description drives the image. Generate again to add another version.'
         : 'Describe this character, then generate an image.';
@@ -4537,10 +4581,7 @@ async function generateProjectCharacterImage() {
     upsertProjectCharacter(data.character);
     toast(mode === 'sheet' ? 'Character sheet generated.' : 'Portrait generated.', 'success');
   } catch (err) {
-    if (err.code === 'NO_IMAGEGEN_KEY') {
-      state.user.hasBytePlusKey = false;
-      renderBytePlusKeyState();
-    }
+    handleMissingImageKey(err);
     toast(err.message || 'Could not generate the character image.', 'error');
   } finally {
     finishProcess(processId);
@@ -4631,6 +4672,7 @@ $('#project-characters-retry').addEventListener('click', () => loadProjectCharac
 // workspace and the Library stays the place where images are reviewed.
 // ---------------------------------------------------------------------------
 function resetGenerator() {
+  state.generator.savingModel = false;
   state.generator.uploadToken += 1;
   state.generator.runToken += 1;
   state.generator.mode = 'single';
@@ -4691,8 +4733,8 @@ async function loadGenerator(options = {}) {
 }
 
 function generatorHint() {
-  if (!state.user || !state.user.hasBytePlusKey) {
-    return 'Save a BytePlus API key in Settings to generate images.';
+  if (!hasImageApiKey()) {
+    return `Save your ${imageProviderLabel()} API key in Settings to generate images.`;
   }
   if (state.generator.generating) return 'Generating…';
   if (state.generator.uploading) return 'Uploading reference photos…';
@@ -4914,7 +4956,7 @@ function generatorPanelPositions() {
 
 function renderGeneratorComposition() {
   const multiple = state.generator.mode === 'panels';
-  const busy = state.generator.generating || state.generator.uploading;
+  const busy = state.generator.generating || state.generator.uploading || state.generator.savingModel;
   document.querySelectorAll('[data-generator-mode]').forEach((button) => {
     button.setAttribute('aria-pressed', String(button.dataset.generatorMode === state.generator.mode));
     button.disabled = busy;
@@ -4969,9 +5011,11 @@ function renderGenerator() {
   if (state.generator.error) $('#generator-error-text').textContent = state.generator.error;
 
   applyImageSizeOptions(currentImageModel(), '#generator-size');
+  applyImageModelOptions('#generator-model');
 
-  const busy = state.generator.generating || state.generator.uploading;
-  $('#generator-generate').disabled = busy || !(state.user && state.user.hasBytePlusKey);
+  const busy = state.generator.generating || state.generator.uploading || state.generator.savingModel;
+  $('#generator-model').disabled = busy;
+  $('#generator-generate').disabled = busy || !hasImageApiKey();
   $('#generator-count').disabled = busy;
   $('#generator-preset-save').disabled = busy;
   $('#generator-reference-upload').disabled = busy || state.generator.references.length >= state.generator.maxReferences;
@@ -5043,7 +5087,7 @@ function addCharacterReference() {
 
 async function uploadGeneratorReference() {
   const input = $('#generator-reference-file');
-  if (state.generator.generating || state.generator.uploading) return;
+  if (state.generator.generating || state.generator.uploading || state.generator.savingModel) return;
   const files = Array.from(input.files || []);
   if (!files.length) return input.click();
   const remaining = state.generator.maxReferences - state.generator.references.length;
@@ -5145,7 +5189,7 @@ async function deleteGeneratorPreset() {
 
 async function generateImages() {
   const prompt = $('#generator-prompt').value.trim();
-  if (state.generator.generating || state.generator.uploading) return;
+  if (state.generator.generating || state.generator.uploading || state.generator.savingModel) return;
   const composition = state.generator.mode === 'panels'
     ? { layout: state.generator.layout, panels: generatorPanelPositions().map((_, index) => (state.generator.panels[index] || '').trim()) }
     : null;
@@ -5179,10 +5223,7 @@ async function generateImages() {
         renderGeneratorGallery();
       } catch (err) {
         if (state.generator.runToken !== runToken || !state.user || state.user.id !== userId) break;
-        if (err.code === 'NO_IMAGEGEN_KEY') {
-          state.user.hasBytePlusKey = false;
-          renderBytePlusKeyState();
-        }
+        handleMissingImageKey(err);
         toast(err.message || 'Could not generate the image.', 'error');
         break;
       }
@@ -5237,6 +5278,27 @@ $('#generator-reference-add-library').addEventListener('click', addLibraryRefere
 $('#generator-reference-add-character').addEventListener('click', addCharacterReference);
 $('#generator-reference-upload').addEventListener('click', uploadGeneratorReference);
 $('#generator-reference-file').addEventListener('change', uploadGeneratorReference);
+$('#generator-model').addEventListener('change', async (event) => {
+  const imageModel = event.target.value;
+  const userId = state.user && state.user.id;
+  const token = state.generator.runToken;
+  state.generator.savingModel = true;
+  renderGenerator();
+  try {
+    const { user } = await api('/api/me/ai-settings', { method: 'PUT', body: { imageModel } });
+    if (!state.user || state.user.id !== userId || state.generator.runToken !== token) return;
+    state.user = user;
+    refreshImageTools();
+    toast(`Image model: ${IMAGE_MODEL_LABELS[imageModel]}.`, 'success');
+  } catch (error) {
+    if (state.user && state.user.id === userId) toast(error.message || 'Could not save the image model.', 'error');
+  } finally {
+    if (state.user && state.user.id === userId && state.generator.runToken === token) {
+      state.generator.savingModel = false;
+      renderGenerator();
+    }
+  }
+});
 $('#generator-mode').addEventListener('click', (event) => {
   const button = event.target.closest('[data-generator-mode]');
   if (!button || state.generator.generating || state.generator.uploading) return;
@@ -7872,10 +7934,10 @@ async function runGenerationImages() {
   if (!projectId) return toast('Select a Generation Stage project first.', 'error');
   if (generationIsDraft()) return toast('Save the image prompts first.', 'error');
   if (!state.user) return showAuth();
-  if (!state.user.hasBytePlusKey) {
-    toast('Save your BytePlus API key in Settings before generating images.', 'error');
+  if (!hasImageApiKey()) {
+    toast(`Save your ${imageProviderLabel()} API key in Settings to generate images.`, 'error');
     switchTab('apis');
-    $('#bp-api-key').focus();
+    $(imageProviderLabel() === 'OpenAI' ? '#openai-api-key' : '#bp-api-key').focus();
     return;
   }
 
@@ -7912,14 +7974,13 @@ async function runGenerationImages() {
       state.generation.runProgress[prompt.id] = 'failed';
       state.generation.runProgress[`${prompt.id}:error`] = err.message || 'Image generation failed.';
       failed += 1;
-      if (err.code === 'NO_IMAGEGEN_KEY') {
-        state.user.hasBytePlusKey = false;
-        renderBytePlusKeyState();
+      if (err.code === 'NO_IMAGEGEN_KEY' || err.code === 'NO_OPENAI_IMAGE_KEY') {
+        handleMissingImageKey(err);
         switchTab('apis');
-        $('#bp-api-key').focus();
+        $(imageProviderLabel() === 'OpenAI' ? '#openai-api-key' : '#bp-api-key').focus();
       } else if (err.code === 'INVALID_IMAGEGEN_KEY' || err.code === 'IMAGEGEN_KEY_UNREADABLE') {
         switchTab('apis');
-        $('#bp-api-key').focus();
+        $(imageProviderLabel() === 'OpenAI' ? '#openai-api-key' : '#bp-api-key').focus();
       }
       toast(err.message || 'Image generation failed.', 'error');
       break;

@@ -17,6 +17,8 @@ const fieldReviewStore = require('./fieldreviews').init(db.db);
 const characterStore = require('./characters').init(db.db);
 const standaloneStore = require('./standalone').init(db.db);
 const { prepareImagePrompt } = require('./imagecomposition');
+const IMAGE_MODELS = require('./public/image-models');
+const { generateOpenAIImage } = require('./openaiimages');
 const { init: initApiUsage, normalizeUsage } = require('./apiusage');
 const apiUsageStore = initApiUsage(db.db);
 const requestTracker = require('./track').init(db.db);
@@ -37,9 +39,7 @@ const DEEPSEEK_ENDPOINT =
 const BYTEPLUS_IMAGE_ENDPOINT =
   process.env.BYTEPLUS_IMAGE_ENDPOINT ||
   'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations';
-const IMAGE_MODEL_SIZES = new Map([
-  ['dola-seedream-5-0-pro-260628', ['1K', '1.5K', '2K']],
-]);
+const IMAGE_MODEL_SIZES = new Map(IMAGE_MODELS.map((model) => [model.id, model.sizes]));
 const DEFAULT_TEXT_MODEL = 'deepseek-v4-pro';
 const configuredImageModel = process.env.BYTEPLUS_IMAGE_MODEL || 'dola-seedream-5-0-pro-260628';
 const DEFAULT_IMAGE_MODEL = IMAGE_MODEL_SIZES.has(configuredImageModel)
@@ -521,7 +521,7 @@ async function handleSaveAISettings(req, res) {
     fail(400, 'Unsupported text model. Choose DeepSeek 4 Pro.');
   }
   if (!IMAGE_MODEL_SIZES.has(imageModel)) {
-    fail(400, 'Unsupported image model. Choose Seedream 5.0 Pro.');
+    fail(400, 'Unsupported image model. Choose a model from the image-model list.');
   }
 
   const updated = db.setUserAISettings(session.user_id, textModel, imageModel);
@@ -2756,13 +2756,7 @@ async function handleGenerationImageOne(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
 
-  if (!session.byteplus_api_key_enc) {
-    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
-  }
-  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
-  if (!apiKey) {
-    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
-  }
+  const apiKey = imageApiKey(session);
 
   const { project } = generationProject(req, body.projectId, { requireStage: true });
   const promptId = typeof body.promptId === 'string' ? body.promptId.trim() : '';
@@ -2830,11 +2824,34 @@ async function handleGenerationImageOne(req, res) {
     project: db.getProject(session.user_id, project.id),
   });
 }
-async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages = []) {
+function imageApiKey(session) {
+  const model = IMAGE_MODELS.find((item) => item.id === session.image_model)
+    || IMAGE_MODELS.find((item) => item.id === DEFAULT_IMAGE_MODEL);
+  const openAI = model.provider === 'openai';
+  const label = openAI ? 'OpenAI' : 'BytePlus';
+  const encrypted = openAI ? session.openai_api_key_enc : session.byteplus_api_key_enc;
+  if (!encrypted) fail(409, `No ${label} API key is saved for your account. Add one in Settings.`, openAI ? 'NO_OPENAI_IMAGE_KEY' : 'NO_IMAGEGEN_KEY');
+  const apiKey = security.decryptApiKey(encrypted);
+  if (!apiKey) fail(500, `Your saved ${label} API key could not be read. Please save it again.`, 'IMAGEGEN_KEY_UNREADABLE');
+  return apiKey;
+}
+
+async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages = [], session = {}) {
   const images = (Array.isArray(referenceImages) ? referenceImages : [referenceImages])
     .map((item) => (typeof item === 'string' ? item.trim() : ''))
     .filter(Boolean)
     .slice(0, 10);
+  if (IMAGE_MODELS.find((item) => item.id === imageModel)?.provider === 'openai') {
+    try {
+      return await generateOpenAIImage({
+        apiKey, model: imageModel, size, prompt, images,
+        baseUrl: (session.openai_base_url || '').trim() || OPENAI_DEFAULT_BASE_URL,
+        userId: session.user_id,
+      }, (url, options) => requestTracker.fetch(url, options, { provider: 'openai-images' }));
+    } catch (err) {
+      generationFail(err);
+    }
+  }
   let upstream;
   try {
     upstream = await requestTracker.fetch(BYTEPLUS_IMAGE_ENDPOINT, {
@@ -2954,7 +2971,7 @@ async function storeGeneratedImage({
   title,
   promptDraftId,
 }) {
-  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages);
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages, session);
   const file = `${crypto.randomUUID()}.${generated.extension}`;
   const directory = path.join(IMAGE_DIR, project.id);
   try {
@@ -3006,14 +3023,7 @@ async function handleGenerateImage(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
 
-  if (!session.byteplus_api_key_enc) {
-    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
-  }
-
-  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
-  if (!apiKey) {
-    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
-  }
+  const apiKey = imageApiKey(session);
 
   const imageModel = IMAGE_MODEL_SIZES.has(session.image_model)
     ? session.image_model
@@ -3889,13 +3899,7 @@ async function handleStorySheetGenerate(req, res, projectId, characterId) {
   const session = requireUser(req);
   const body = await readJSON(req);
 
-  if (!session.byteplus_api_key_enc) {
-    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
-  }
-  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
-  if (!apiKey) {
-    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
-  }
+  const apiKey = imageApiKey(session);
 
   const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
   const allowedSizes = IMAGE_MODEL_SIZES.get(imageModel);
@@ -3922,7 +3926,7 @@ async function handleStorySheetGenerate(req, res, projectId, characterId) {
   } catch (err) {
     fail(500, `Could not load the character sheet layout reference: ${err.message}`, 'IMAGEGEN_REFERENCE_MISSING');
   }
-  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImage);
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImage, session);
 
   const file = `${crypto.randomUUID()}.${generated.extension}`;
   const directory = path.join(IMAGE_DIR, project.id);
@@ -4082,13 +4086,7 @@ async function handleCharacterGenerate(req, res, characterId) {
   const character = characterStore.get(session.user_id, characterId);
   if (!character) fail(404, 'Character not found.');
 
-  if (!session.byteplus_api_key_enc) {
-    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
-  }
-  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
-  if (!apiKey) {
-    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
-  }
+  const apiKey = imageApiKey(session);
 
   const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
   const allowedSizes = IMAGE_MODEL_SIZES.get(imageModel);
@@ -4118,7 +4116,7 @@ async function handleCharacterGenerate(req, res, characterId) {
     prompt = buildCharacterPortraitPrompt(character, description);
   }
 
-  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages);
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages, session);
 
   const file = `${crypto.randomUUID()}.${generated.extension}`;
   const directory = path.join(IMAGE_DIR, CHARACTER_IMAGE_SUBDIR, character.id);
@@ -4357,13 +4355,7 @@ async function handleGenerationCreate(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
 
-  if (!session.byteplus_api_key_enc) {
-    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
-  }
-  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
-  if (!apiKey) {
-    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
-  }
+  const apiKey = imageApiKey(session);
 
   const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
   const allowedSizes = IMAGE_MODEL_SIZES.get(imageModel);
@@ -4382,7 +4374,7 @@ async function handleGenerationCreate(req, res) {
   }
 
   const { images, saved } = await resolveGenerationReferences(session, body.references);
-  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, images);
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, images, session);
 
   const generationId = crypto.randomUUID();
   const file = `${crypto.randomUUID()}.${generated.extension}`;

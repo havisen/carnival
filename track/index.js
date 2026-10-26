@@ -63,6 +63,14 @@ function sanitize(value, secrets = new Set(), depth = 0) {
 function bodySnapshot(body, secrets) {
   if (body === undefined || body === null || body === '') return null;
   let parsed = body;
+  if (typeof FormData !== 'undefined' && body instanceof FormData) {
+    parsed = Object.create(null);
+    for (const [name, value] of body.entries()) {
+      const item = typeof value === 'string' ? value : '[image data omitted]';
+      if (Object.hasOwn(parsed, name)) parsed[name] = [...(Array.isArray(parsed[name]) ? parsed[name] : [parsed[name]]), item];
+      else parsed[name] = item;
+    }
+  }
   if (typeof body === 'string') {
     try { parsed = JSON.parse(body); } catch (_) { /* retain malformed provider replies */ }
   }
@@ -210,7 +218,10 @@ function init(database) {
       model: requestBody?.model || state.entry.model, status: 'pending', statusCode: null,
       started: Date.now(), startedAt: new Date().toISOString(), finishedAt: null, durationMs: null,
       requestHeaders, requestBody, responseHeaders: {}, responseBody: null,
-      requestBytes: options.body ? Buffer.byteLength(options.body) : 0, responseBytes: null,
+      requestBytes: options.body
+        ? (typeof FormData !== 'undefined' && options.body instanceof FormData ? null : Buffer.byteLength(options.body))
+        : 0,
+      responseBytes: null,
       network: { host: new URL(url).host, protocol: new URL(url).protocol, headersMs: null }, error: null,
     };
     save(entry, state);

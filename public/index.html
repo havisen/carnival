@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-26.1" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-26.2" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -563,6 +563,10 @@
               <div id="generator-panels"></div>
             </fieldset>
             <div class="gen-prompt-controls generator-output-controls">
+              <label class="field inline generator-model-field">
+                <span class="field-label">Image model</span>
+                <select id="generator-model"></select>
+              </label>
               <label class="field inline">
                 <span class="field-label">Image size</span>
                 <select id="generator-size"></select>
@@ -1004,7 +1008,7 @@
               <p class="hint">ModelArk API key for Seedream image generation.</p>
               <div class="key-state" id="bp-key-empty">
                 <span class="key-dot key-dot-missing"></span>
-                <p>No BytePlus API key saved yet. Add one to generate scene images.</p>
+                <p>No BytePlus API key saved yet. Add one to use Seedream image models.</p>
               </div>
               <div class="key-state hidden" id="bp-key-saved">
                 <span class="key-dot"></span>
@@ -1051,7 +1055,7 @@
 
             <div class="card">
               <h2 class="card-title">OpenAI-compatible API</h2>
-              <p class="hint">API key and base URL for any OpenAI-compatible provider (OpenAI, Together, Groq, local, etc.).</p>
+              <p class="hint">Used by OpenAI-compatible chat and GPT Image generation. For OpenAI image models, use your OpenAI key and https://api.openai.com/v1. A custom provider must support the Images API.</p>
               <div class="key-state" id="openai-key-empty">
                 <span class="key-dot key-dot-missing"></span>
                 <p>No OpenAI-compatible key saved yet.</p>
@@ -1095,7 +1099,7 @@
                   <option value="dola-seedream-5-0-pro-260628">Seedream 5.0 Pro — 1K / 1.5K / 2K</option>
                 </select>
               </label>
-              <p class="hint">Used for all new scene images. Seedream 5.0 Pro supports 1K, 1.5K, and 2K.</p>
+              <p class="hint">Used by all image tools. Seedream uses your BytePlus key; GPT Image uses your saved OpenAI key. Model access depends on your provider account.</p>
 
               <button class="btn btn-primary" id="save-ai-settings" type="button">Save model preferences</button>
               <p class="hint" id="ai-settings-hint">Choose a text and image model, then save.</p>
@@ -1237,7 +1241,7 @@
           <ol class="docs-list">
             <li><strong>Create an account</strong> and sign in.</li>
             <li>Open <strong>Settings</strong> and save a <strong>DeepSeek API key</strong>. This unlocks ideas, references, scene prompts, the Guide chat, and the Reviewer bot.</li>
-            <li>To generate images, add a <strong>BytePlus</strong> key in Settings.</li>
+            <li>For images, add a <strong>BytePlus</strong> key for Seedream or an <strong>OpenAI</strong> key for GPT Image. Choose your image model in Settings or in the standalone generator.</li>
             <li>Optionally add an <strong>Anthropic</strong> and/or <strong>OpenAI-compatible</strong> key to use other models for the Guide chat and Reviewer bot.</li>
           </ol>
           <p class="hint">Keys are stored encrypted (AES-256-GCM) on the server. The UI only ever shows a masked hint such as <code>sk-…abc123</code>.</p>
@@ -1311,7 +1315,7 @@
           <div class="docs-callout docs-callout-note">
             <strong>Not a review.</strong> "Final" only marks which image is this character's current reference. It does not approve content or make anything publication-ready; the Library review checklist still applies to every asset.
           </div>
-          <p class="hint">Deleting a character removes its generated images from disk. Image generation needs a saved BytePlus API key in Settings.</p>
+          <p class="hint">Deleting a character removes its generated images from disk. Image generation uses the saved key for your selected image provider.</p>
         </div>
 
         <div class="card" id="docs-generator">
@@ -1407,7 +1411,7 @@
           <h2 class="card-title">Settings</h2>
           <ul class="docs-list">
             <li><strong>DeepSeek API</strong> — key for ideas, references, scene prompts, and the default chat.</li>
-            <li><strong>BytePlus image API</strong> — key for Seedream image generation.</li>
+            <li><strong>BytePlus image API</strong> — key for Seedream image generation. <strong>OpenAI-compatible API</strong> supplies the key and endpoint for GPT Image and OpenAI-compatible chat.</li>
             <li><strong>Anthropic API</strong> — key for Claude models in the chat.</li>
             <li><strong>OpenAI-compatible API</strong> — key and base URL for any OpenAI-compatible provider.</li>
             <li><strong>Default models</strong> — the text and image models used across the app.</li>
@@ -1664,6 +1668,7 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="app.js?v=2026-10-26.1"></script>
+  <script src="image-models.js?v=2026-10-26.2"></script>
+  <script src="app.js?v=2026-10-26.2"></script>
 </body>
 </html>
