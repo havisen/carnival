@@ -725,7 +725,7 @@ function recordImage({
   promptDraftId,
   derivedFromVersionId,
   title,
-}) {
+}, manageTransaction = true) {
   const normalized = normalizeRelative(relativePath);
   if (!normalized) throw new Error('Invalid asset path.');
   const facts = fileFacts(normalized);
@@ -733,7 +733,7 @@ function recordImage({
   const project = projectId ? projectRow(projectId) : null;
   if (projectId && (!project || project.user_id !== userId)) throw new Error('Project not found.');
 
-  rawDb.exec('BEGIN');
+  if (manageTransaction) rawDb.exec('BEGIN');
   try {
     let asset = projectId && sceneId
       ? rawDb.prepare('SELECT * FROM assets WHERE user_id = ? AND project_id = ? AND scene_id = ? ORDER BY updated_at DESC LIMIT 1').get(userId, projectId, sceneId)
@@ -798,7 +798,7 @@ function recordImage({
       rawDb.prepare('UPDATE projects SET scene_images = ?, updated_at = ? WHERE id = ?')
         .run(JSON.stringify(images), new Date().toISOString(), project.id);
     }
-    rawDb.exec('COMMIT');
+    if (manageTransaction) rawDb.exec('COMMIT');
     return {
       assetId: asset.id,
       versionId,
@@ -806,6 +806,18 @@ function recordImage({
       relativePath: normalized,
       promptDraftId: promptDraftId || null,
     };
+  } catch (error) {
+    if (manageTransaction) rawDb.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function recordImages(images) {
+  rawDb.exec('BEGIN');
+  try {
+    const recorded = images.map((image) => recordImage(image, false));
+    rawDb.exec('COMMIT');
+    return recorded;
   } catch (error) {
     rawDb.exec('ROLLBACK');
     throw error;
@@ -1024,6 +1036,7 @@ function init(database, directory, databasePath) {
   return {
     init,
     recordImage,
+    recordImages,
     archiveProject,
     canReadPath,
     updateAsset,

@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-26.3" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-26.4" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -1516,6 +1516,12 @@
             <p class="library-asset-note">Asset only. Generation approval and publication approval are separate and are shown only when recorded.</p>
           </div>
         </div>
+        <div class="library-split">
+          <h3>Split collage</h3>
+          <p class="hint" id="library-split-status" role="status">Cuts a 2 × 2 collage into four separate photos. The original stays in your Library.</p>
+          <button class="btn btn-secondary" id="library-split-button" type="button">Split into 4 photos</button>
+          <div class="library-split-results hidden" id="library-split-results"></div>
+        </div>
         <div class="library-metadata">
           <h3>Asset metadata</h3>
           <dl id="library-metadata-list"></dl>
@@ -1703,7 +1709,7 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="image-models.js?v=2026-10-26.3"></script>
-  <script src="app.js?v=2026-10-26.3"></script>
+  <script src="image-models.js?v=2026-10-26.4"></script>
+  <script src="app.js?v=2026-10-26.4"></script>
 </body>
 </html>

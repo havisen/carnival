@@ -3345,6 +3345,74 @@ async function handleLibraryList(req, res) {
   return sendJSON(res, 200, { images });
 }
 
+async function handleLibrarySplit(req, res, assetId) {
+  const session = requireUser(req);
+  const source = assetStore.getAsset(session.user_id, assetId);
+  if (!source || source.missing) fail(404, 'Source image not found.');
+  await resolveLibraryFile(session.user_id, source.relativePath);
+  const contentType = String(req.headers['content-type'] || '');
+  if (!contentType.startsWith('multipart/form-data;')) fail(400, 'Upload the four split photos as multipart data.');
+  if (Number(req.headers['content-length']) > MAX_UPLOAD_BYTES) fail(413, 'The four photos must total less than 20 MB.');
+  const bytes = await readBinary(req, MAX_UPLOAD_BYTES);
+  let form;
+  try { form = await new Response(bytes, { headers: { 'content-type': contentType } }).formData(); }
+  catch (_) { fail(400, 'The split-photo upload could not be read.'); }
+  if (form.get('sourceVersionId') !== source.versionId) fail(409, 'The source image changed. Reopen it and split the current version.');
+  const width = Number(form.get('width'));
+  const height = Number(form.get('height'));
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2 || width * height > 16000000) fail(400, 'Choose an image between 2 × 2 pixels and 16 megapixels.');
+  if (source.width && source.height && !(width === source.width && height === source.height) &&
+      !(['jpg', 'jpeg', 'webp'].includes(source.extension) && width === source.height && height === source.width)) {
+    fail(400, 'The split dimensions do not match the source image.');
+  }
+  const uploads = form.getAll('photos');
+  if (uploads.length !== 4) fail(400, 'Exactly four photos are required.');
+  const panels = [];
+  for (let index = 0; index < 4; index++) {
+    const upload = uploads[index];
+    if (!upload || typeof upload.arrayBuffer !== 'function' || upload.type !== 'image/png') fail(400, 'Each split photo must be a PNG image.');
+    const buffer = Buffer.from(await upload.arrayBuffer());
+    const panelWidth = index % 2 ? width - Math.floor(width / 2) : Math.floor(width / 2);
+    const panelHeight = index > 1 ? height - Math.floor(height / 2) : Math.floor(height / 2);
+    if (buffer.length < 45 || !buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+        buffer.readUInt32BE(8) !== 13 || buffer.toString('ascii', 12, 16) !== 'IHDR' ||
+        buffer.readUInt32BE(16) !== panelWidth || buffer.readUInt32BE(20) !== panelHeight ||
+        buffer.toString('ascii', buffer.length - 8, buffer.length - 4) !== 'IEND') {
+      fail(400, `Photo ${index + 1} is invalid or has the wrong dimensions.`);
+    }
+    panels.push(buffer);
+  }
+  // Recheck after all asynchronous upload reads, before any files are published.
+  const current = assetStore.getAsset(session.user_id, assetId);
+  if (!current || current.versionId !== source.versionId || current.sha256 !== source.sha256) fail(409, 'The source image changed. Reopen it and try again.');
+  const folder = crypto.randomUUID();
+  const staging = path.join(IMAGE_DIR, `.split-${folder}`);
+  const destination = path.join(IMAGE_DIR, folder);
+  const names = ['1-top-left.png', '2-top-right.png', '3-bottom-left.png', '4-bottom-right.png'];
+  const labels = ['Top left', 'Top right', 'Bottom left', 'Bottom right'];
+  const original = source.versions.find((version) => version.id === source.versionId);
+  let published = false;
+  let recorded;
+  try {
+    fs.mkdirSync(staging, { mode: 0o700 });
+    names.forEach((name, index) => fs.writeFileSync(path.join(staging, name), panels[index], { flag: 'wx', mode: 0o600 }));
+    // No awaits between publication and registration: discovery cannot adopt a partial batch.
+    fs.renameSync(staging, destination);
+    published = true;
+    recorded = assetStore.recordImages(names.map((name, index) => ({
+      userId: session.user_id, relativePath: `${folder}/${name}`,
+      derivedFromVersionId: source.versionId, source: 'collage-split-2x2',
+      title: `${source.label || source.name} — ${labels[index]}`,
+      model: original?.model || null, prompt: original?.prompt || null,
+    })));
+  } catch (error) {
+    fs.rmSync(published ? destination : staging, { recursive: true, force: true });
+    throw error;
+  }
+  const photos = recorded.map((item) => assetStore.getAsset(session.user_id, item.assetId));
+  return sendJSON(res, 201, { photos, sourceAssetId: source.id });
+}
+
 async function handleLibraryFile(req, res, requestUrl) {
   const session = requireUser(req);
   const relativePath = requestUrl.searchParams.get('path') || '';
@@ -5208,6 +5276,12 @@ async function handleApi(req, res, pathname) {
     }
     if (method !== 'POST') fail(405, 'Method not allowed.');
     return handleAssetTag(req, res, assetTagMatch[1], null);
+  }
+
+  const assetSplitMatch = pathname.match(/^\/api\/assets\/([A-Za-z0-9_-]{1,64})\/split$/);
+  if (assetSplitMatch) {
+    if (method === 'POST') return handleLibrarySplit(req, res, assetSplitMatch[1]);
+    fail(405, 'Method not allowed.');
   }
 
   const assetMatch = pathname.match(/^\/api\/assets\/([A-Za-z0-9_-]{1,64})$/);
