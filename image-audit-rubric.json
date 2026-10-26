@@ -1,0 +1,518 @@
+{
+  "id": "image-audit-rubric",
+  "version": "1.0.0",
+  "updated": "2026-10-25",
+  "title": "Image and prompt audit rubric",
+  "description": "Machine-readable scoring standard derived from IMAGE_AUDIT_EXAMPLES.md, aligned to the review vocabulary in reviews.js.",
+  "source": {
+    "file": "IMAGE_AUDIT_EXAMPLES.md",
+    "original": "examples.md (attachment)",
+    "sha256": "d2c4d0b81036d088e0a3b76920ebadee8ff704e6536519b4c943c582b439cb3c",
+    "statedModel": "seedream (bad examples only; see openQuestions)",
+    "openQuestions": [
+      {
+        "id": "provenance",
+        "detail": "Source claims all cases were made with seedream, but five assets are served from cdn.openart.ai and one filename reads openart-<id>. Settle provenance before comparing models."
+      },
+      {
+        "id": "missing-assets",
+        "detail": "The four assets/20261024_*.png files are not committed to this repository; five external cdn.openart.ai URLs are unarchived and may rot."
+      },
+      {
+        "id": "weights-unapproved",
+        "detail": "Weights below are a first proposal with no owner sign-off. Only decisionPolicy mirrors existing behavior in reviews.js."
+      },
+      {
+        "id": "duplicate-evidence",
+        "detail": "G1 and G2 carry identical reviewer notes, so the good examples appear not to have been assessed independently."
+      },
+      {
+        "id": "no-revision-linkage",
+        "detail": "No case records a prompt revision id, seed, or asset version, so a fault cannot be traced to the prompt revision that produced it."
+      }
+    ]
+  },
+  "appVocabulary": {
+    "mirroredFrom": "reviews.js",
+    "decisions": ["APPROVED", "REVISE", "REJECT", "OWNER REVIEW"],
+    "states": ["pass", "fail", "not-applicable", "unreviewed"],
+    "categories": [
+      { "id": "rights", "label": "Rights" },
+      { "id": "adult-character", "label": "Adult character" },
+      { "id": "consent", "label": "Consent" },
+      { "id": "explicitness", "label": "Explicitness" },
+      { "id": "ai-label", "label": "AI label" },
+      { "id": "placement", "label": "Placement" },
+      { "id": "quality", "label": "Quality" }
+    ],
+    "note": "Every asset still requires one state per category. Criteria below add detail to the quality and placement calls; they never replace a required category state. The subject matter is adult and fetish-adjacent in several cases, which does not waive adult-character, explicitness, or ai-label."
+  },
+  "criteria": [
+    {
+      "id": "photorealism",
+      "label": "Photorealism",
+      "category": "quality",
+      "type": "quality",
+      "weight": 20,
+      "defaultSeverityOnFail": "major",
+      "question": "Does the output read as a photograph rather than an illustration, cartoon, or fantasy render?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["B1-s1", "B1-s2", "B1-s3", "B3", "G1", "G2", "G3"]
+    },
+    {
+      "id": "prompt-adherence",
+      "label": "Prompt adherence",
+      "category": "quality",
+      "type": "quality",
+      "weight": 10,
+      "defaultSeverityOnFail": "major",
+      "question": "Does the output match explicit style and format instructions in the prompt, such as a requested realistic photographic style or panel layout?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["B3", "G2"]
+    },
+    {
+      "id": "anatomy-proportion",
+      "label": "Anatomy and proportion",
+      "category": "quality",
+      "type": "quality",
+      "weight": 15,
+      "defaultSeverityOnFail": "major",
+      "question": "Are body proportions plausible for the weight and build the prompt specifies, with no ballooned or physically impossible geometry?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["B3", "B4"]
+    },
+    {
+      "id": "character-continuity",
+      "label": "Character continuity",
+      "category": "quality",
+      "type": "quality",
+      "weight": 10,
+      "defaultSeverityOnFail": "major",
+      "question": "Do the same characters keep a consistent identity across scenes, panels, and the reference image?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["B1-s2", "G1", "G3"]
+    },
+    {
+      "id": "wardrobe-integrity",
+      "label": "Wardrobe and material integrity",
+      "category": "quality",
+      "type": "quality",
+      "weight": 10,
+      "defaultSeverityOnFail": "major",
+      "question": "Do fabrics render as opaque, correctly fitted materials with no unintended transparency or clipping?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["B2"]
+    },
+    {
+      "id": "camera-lens-fidelity",
+      "label": "Camera and lens fidelity",
+      "category": "quality",
+      "type": "quality",
+      "weight": 10,
+      "defaultSeverityOnFail": "minor",
+      "severityEscalation": "Raise to major when distortion changes subject or room proportions rather than adding only mild curvature.",
+      "question": "Is the framing free of unrequested distortion such as fisheye or barrel warping, and consistent with the requested focal length?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["B1-s1", "G2"]
+    },
+    {
+      "id": "scene-continuity",
+      "label": "Scene and prop continuity",
+      "category": "quality",
+      "type": "quality",
+      "weight": 5,
+      "defaultSeverityOnFail": "minor",
+      "question": "Do set dressing, props, and time-of-day anchors stay consistent across scenes of the same location?",
+      "evidenceOrigin": "derived",
+      "derivation": "Derived from the repeated kitchen detail lists and the 11:45 PM clock in B1. No reviewer fault states this directly, so treat it as a proposed criterion.",
+      "observedExamples": ["B1-s1", "B1-s2", "B1-s3"]
+    },
+    {
+      "id": "lighting-camera-work",
+      "label": "Lighting and camera work",
+      "category": "quality",
+      "type": "quality",
+      "weight": 5,
+      "defaultSeverityOnFail": "minor",
+      "question": "Are lighting, angles, and depth of field deliberate and consistent with the requested mood?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["G2", "G3"]
+    },
+    {
+      "id": "prompt-structure",
+      "label": "Prompt structure",
+      "category": "quality",
+      "type": "process",
+      "weight": 5,
+      "defaultSeverityOnFail": "minor",
+      "question": "Does the prompt carry subject, action, environment, cinematography, lighting/style, and technical slots, plus the continuity anchors needed to reproduce the scene?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["B4", "G2"]
+    },
+    {
+      "id": "platform-rules",
+      "label": "Platform rule compliance",
+      "category": "placement",
+      "type": "compliance",
+      "weight": 10,
+      "defaultSeverityOnFail": "critical",
+      "question": "Does the asset satisfy the target platform's published content rules, with the required AI label and placement?",
+      "evidenceOrigin": "source",
+      "observedExamples": ["G1", "G2"]
+    },
+    {
+      "id": "audience-appeal",
+      "label": "Audience appeal",
+      "category": "quality",
+      "type": "advisory",
+      "weight": 0,
+      "defaultSeverityOnFail": "none",
+      "question": "Does the scene and casting land with the intended audience?",
+      "evidenceOrigin": "source",
+      "advisory": true,
+      "observedExamples": ["G1", "G2", "G3"]
+    },
+    {
+      "id": "platform-reception",
+      "label": "Platform reception",
+      "category": "placement",
+      "type": "signal",
+      "weight": 0,
+      "defaultSeverityOnFail": "none",
+      "question": "Did comparable assets perform acceptably after publication on the target platform?",
+      "evidenceOrigin": "source",
+      "advisory": true,
+      "observedExamples": ["G1", "G2"]
+    }
+  ],
+  "unevidencedRequiredCategories": [
+    {
+      "category": "rights",
+      "requirement": "State required for every asset; this reference file contains no rights example."
+    },
+    {
+      "category": "adult-character",
+      "requirement": "State required for every asset, including the fetish-adjacent cases judged visually strong."
+    },
+    {
+      "category": "consent",
+      "requirement": "State required for every asset; this reference file contains no consent example."
+    },
+    {
+      "category": "explicitness",
+      "requirement": "State required. B2 raises it directly: the transparent shirt forces an explicitness call."
+    },
+    {
+      "category": "ai-label",
+      "requirement": "State required for every asset; this reference file contains no label example."
+    }
+  ],
+  "scoring": {
+    "weightsSum": 100,
+    "scoredCriteria": [
+      "photorealism",
+      "prompt-adherence",
+      "anatomy-proportion",
+      "character-continuity",
+      "wardrobe-integrity",
+      "camera-lens-fidelity",
+      "scene-continuity",
+      "lighting-camera-work",
+      "prompt-structure",
+      "platform-rules"
+    ],
+    "unscoredCriteria": ["audience-appeal", "platform-reception"],
+    "formula": "score = sum(weight of scored criteria in state pass or not-applicable) / 100",
+    "note": "The score is informational only. Decisions come from criterion states through decisionPolicy, because reviews.js computes readiness from explicit states and never approves automatically."
+  },
+  "decisionPolicy": {
+    "inputStates": ["pass", "fail", "not-applicable", "unreviewed"],
+    "rules": [
+      {
+        "order": 1,
+        "id": "reject-critical",
+        "when": "Any criterion with defaultSeverityOnFail 'critical' is in state fail.",
+        "decision": "REJECT"
+      },
+      {
+        "order": 2,
+        "id": "owner-review-sensitive",
+        "when": "Any failed criterion belongs to category rights, adult-character, consent, explicitness, ai-label, or placement.",
+        "decision": "OWNER REVIEW"
+      },
+      {
+        "order": 3,
+        "id": "revise",
+        "when": "At least one criterion is in state fail and no earlier rule matched.",
+        "decision": "REVISE"
+      },
+      {
+        "order": 4,
+        "id": "incomplete",
+        "when": "At least one criterion is in state unreviewed.",
+        "decision": "OWNER REVIEW"
+      },
+      {
+        "order": 5,
+        "id": "approve",
+        "when": "No criterion is in state fail or unreviewed.",
+        "decision": "APPROVED"
+      }
+    ],
+    "note": "Mirrors checklistComplete in reviews.js, which requires every item to be neither 'unreviewed' nor 'fail'. Any unreviewed criterion therefore blocks APPROVED. Advisory and signal criteria never move a decision."
+  },
+  "cases": [
+    {
+      "id": "B1-s1",
+      "parent": "B1",
+      "verdict": "bad",
+      "title": "Midnight Grilled Cheese - Scene 1, Midnight Craving",
+      "model": "seedream",
+      "assets": [
+        { "kind": "local", "path": "assets/20261024_154257_469bd78b-74ee-4f49-96ca-9fb5d5f84407.png", "committed": false }
+      ],
+      "prompt": "Photorealistic interior night scene in a cozy home kitchen. A 32-year-old woman with an oval face, warm brown eyes, light freckles across her nose and cheeks, gentle sleepy smile, auburn hair pulled into a messy bun with loose strands framing her face, no makeup. She wears a pale pink cotton pajama set: short-sleeve button-up top with small white polka dots and matching shorts, bare feet. She is shuffling near the refrigerator and pantry, one hand reaching for a loaf of bread on the counter, the other hand near the under-cabinet light switch, yawning softly. The kitchen has a stove and countertop along one wall, refrigerator nearby, small wooden kitchen island with two stools, cast iron skillet, butter dish, bread bag, sliced cheddar cheese, ceramic plate, paper towel, glass of milk, wall clock showing approximately 11:45 PM. Warm dim lighting from under-cabinet lights and a single pendant light over the stove, soft shadows, realistic textures. Camera framing: medium wide shot, eye-level, slightly frontal, showing woman and kitchen context, shallow depth of field emphasizing her sleepy affectionate mood.",
+      "evidence": [
+        {
+          "criterion": "camera-lens-fidelity",
+          "state": "fail",
+          "severity": "minor",
+          "quote": "The lens looks fisheye."
+        },
+        {
+          "criterion": "photorealism",
+          "state": "fail",
+          "severity": "major",
+          "quote": "The style is not realistic."
+        },
+        {
+          "criterion": "scene-continuity",
+          "state": "unreviewed",
+          "severity": "none",
+          "quote": "Same kitchen: cast iron skillet on stove ... wall clock at 11:45 PM",
+          "note": "The prompt pins the room and clock, but no reviewer statement covers scene continuity, so it stays unreviewed."
+        }
+      ]
+    },
+    {
+      "id": "B1-s2",
+      "parent": "B1",
+      "verdict": "bad",
+      "title": "Midnight Grilled Cheese - Scene 2, Waiting on the Stool",
+      "model": "seedream",
+      "assets": [
+        { "kind": "local", "path": "assets/20261024_154912_75f93d7c-0cfa-48c6-b55a-8b9253a16002.png", "committed": false }
+      ],
+      "prompt": "Photorealistic night kitchen scene. The same 32-year-old woman with auburn hair in a messy bun, loose strands, light freckles, no makeup, pale pink polka-dot pajama set, bare feet, stands near the stove and countertop, holding a spatula or buttering bread, glancing tenderly toward the man. The 35-year-old husband with broad shoulders, thick arms, pronounced rounded belly under a plain white cotton t-shirt stretched snugly over his stomach, gray sweatpants, bare feet, short dark brown hair slightly messy, light stubble, kind hazel eyes, sleepy warm smile. He sits heavily on a wooden kitchen stool at the small island, one hand rubbing his rounded belly, watching her. Same kitchen: cast iron skillet on stove, butter dish, loaf of bread, sliced cheddar cheese, ceramic plate, paper towel, glass of milk, wall clock at 11:45 PM, refrigerator and pantry nearby. Warm dim under-cabinet lights and a single pendant light over the stove, soft shadows, domestic textures. Camera framing: medium shot from the side or three-quarter angle capturing both characters, husband in foreground on stool, woman in midground at stove, intimate relaxed composition.",
+      "evidence": [
+        {
+          "criterion": "photorealism",
+          "state": "fail",
+          "severity": "major",
+          "quote": "This one doesn't have photorealistic characters. It looks fantasy, not real."
+        },
+        {
+          "criterion": "character-continuity",
+          "state": "fail",
+          "severity": "major",
+          "quote": "The characters don't look that close to the other photos."
+        },
+        {
+          "criterion": "scene-continuity",
+          "state": "unreviewed",
+          "severity": "none",
+          "quote": "Same kitchen: cast iron skillet on stove ... wall clock at 11:45 PM",
+          "note": "Character continuity failed across scenes; room and prop continuity was never separately assessed."
+        }
+      ]
+    },
+    {
+      "id": "B1-s3",
+      "parent": "B1",
+      "verdict": "bad",
+      "title": "Midnight Grilled Cheese - Scene 3, Served with Love",
+      "model": "seedream",
+      "assets": [
+        { "kind": "local", "path": "assets/20261024_154912_f581bc4d-c72d-43d4-8a8b-cf611a3a3abe.png", "committed": false }
+      ],
+      "prompt": "Photorealistic intimate night kitchen scene. The same 32-year-old woman with auburn messy bun, loose strands, light freckles, no makeup, pale pink polka-dot pajama set, bare feet, leans slightly over the small wooden kitchen island, sliding a golden grilled cheese sandwich from a cast iron skillet onto a ceramic plate with a spatula, then placing a paper towel beside it. The same 35-year-old husband with broad shoulders, thick arms, pronounced rounded belly under stretched white cotton t-shirt, gray sweatpants, bare feet, sits on a wooden stool at the island, warm smile, light stubble, messy dark brown hair, watching her with affectionate tired eyes. Kitchen consistent: stove and countertop along wall, refrigerator nearby, under-cabinet lights, single pendant light, butter dish, bread bag, sliced cheddar cheese, glass of milk, wall clock around 11:45 PM. Warm dim cozy lighting, soft shadows, realistic domestic textures. Camera framing: close medium shot from across the island, focusing on the plate and sandwich in foreground, both characters visible, shallow depth of field, conveying tender domestic care.",
+      "evidence": [
+        {
+          "criterion": "photorealism",
+          "state": "fail",
+          "severity": "minor",
+          "quote": "This one is okay but the style could be more realistic.",
+          "note": "Boundary case: the reviewer accepted the scene while flagging realism. Use it to calibrate the APPROVED versus REVISE line."
+        },
+        {
+          "criterion": "scene-continuity",
+          "state": "unreviewed",
+          "severity": "none",
+          "quote": "Kitchen consistent: stove and countertop along wall ... wall clock around 11:45 PM",
+          "note": "Not assessed in the source; recorded so the case is not silently treated as complete."
+        }
+      ]
+    },
+    {
+      "id": "B2",
+      "verdict": "bad",
+      "title": "Office reveal",
+      "model": "seedream",
+      "assets": [
+        {
+          "kind": "url",
+          "path": "https://cdn.openart.ai/openart-ai/production/2026-06/create-image/OX6JpUpAw4u4SDWEJ6Ct/0217809947705287dca00f85baedac28bed28ae8d5f3a992343e9_0_1780994777196_58e7c6d5.jpeg",
+          "archived": false
+        }
+      ],
+      "prompt": "Photorealistic medium shot in a modern office. A seated, heavily overweight man smiles, his blue shirt. A smiling woman in a white shirt stands beside him, playfully resting her hands on his stomach. Soft indoor lighting, shallow depth of field, blurred background. The man is handsome he is extremely overweight and weighs around 500 pounds. His massive belly is sagging down. The woman is blonde, hot and her extremely large breasts that are a result of plastic surgery. She has a toned, slender body with fair skin.",
+      "evidence": [
+        {
+          "criterion": "wardrobe-integrity",
+          "state": "fail",
+          "severity": "major",
+          "quote": "Shirt is transparent so looks bad."
+        }
+      ],
+      "categoryChecks": [
+        {
+          "category": "explicitness",
+          "state": "unreviewed",
+          "quote": "Shirt is transparent so looks bad.",
+          "note": "Unintended transparency forces an explicit explicitness category state; this rubric does not decide that call."
+        }
+      ]
+    },
+    {
+      "id": "B3",
+      "verdict": "bad",
+      "title": "Two-panel bathroom comic",
+      "model": "seedream",
+      "assets": [
+        {
+          "kind": "url",
+          "path": "https://cdn.openart.ai/openart-ai/production/2026-06/create-image/OX6JpUpAw4u4SDWEJ6Ct/02178100022173036582de0ab192f8b1710090b8a2fff5ccea702_0_1781000231904_5025bec1.jpeg",
+          "archived": false
+        }
+      ],
+      "prompt": "Two-panel horizontal comic in realistic photographic style.\n\nLeft panel is a photo of a young couple in a in a bath room, the young man has brown hair and fair skin. he is handsome and weighs around 300 pounds. He is wearing blue jeans and a no shirt. The young white woman. She has a curvy figure. Her hair is brown with blonde highlights. She is wearing bimbo make up and has lip filler. She is wearing a crop top that shows cleavage and jeans. She has large breast. The man stands on a scale looking down while holding both his hands on his belly. The woman is standing on the side. She smiles towards him. The lighting is bright, and the overall scene is casual and intimate. The room has a calm and intimate atmosphere, with neutral tones and soft textures. The photograph captures a moment of gentle care and affection between the two individuals.\n\nRight panel is a photo of a young couple in a in a bath room, the young man has brown hair and fair skin. he is handsome and weighs around 1000 pounds. He is wearing blue jeans and a no shirt making his massive belly hang out. The young white woman. She has a curvy figure. Her hair is brown with blonde highlights. She is wearing bimbo make up and has lip filler. She is wearing a crop top that shows cleavage and jeans. She has large breast. The man stands on a scale looking down while holding both his hands on his belly. The woman is standing on the side. She blushes and is holding her hand over her face while she smiles towards him. A speech bubble over the woman says \u00abyour getting so incredibly fat\u00bb. The lighting is bright, and the overall scene is casual and intimate. The room has a calm and intimate atmosphere, with neutral tones and soft textures. The photograph captures a moment of gentle care and affection between the two individuals.",
+      "evidence": [
+        {
+          "criterion": "photorealism",
+          "state": "fail",
+          "severity": "major",
+          "quote": "Not realistic at all. Cartoony style."
+        },
+        {
+          "criterion": "prompt-adherence",
+          "state": "fail",
+          "severity": "major",
+          "quote": "Cartoony style.",
+          "note": "The prompt asked for a two-panel comic in realistic photographic style; the delivery ignored the style instruction."
+        },
+        {
+          "criterion": "anatomy-proportion",
+          "state": "fail",
+          "severity": "major",
+          "quote": "Not realistic at all.",
+          "note": "The 300 lb to 1000 lb change between panels is intended, so any fault here means the body reads as physically impossible rather than merely large."
+        }
+      ]
+    },
+    {
+      "id": "B4",
+      "verdict": "bad",
+      "title": "Bed and food",
+      "model": "seedream",
+      "assets": [
+        {
+          "kind": "url",
+          "path": "https://cdn.openart.ai/openart-ai/production/2026-06/create-image/OX6JpUpAw4u4SDWEJ6Ct/021781014752303378c141953f92ec627da9d675fe03be0496132_0_1781014762457_951be44d.jpeg",
+          "archived": false
+        }
+      ],
+      "prompt": "The man is laying ontop of a bed. His huge belly bulges straight up. The women is bringing lots of food",
+      "evidence": [
+        {
+          "criterion": "anatomy-proportion",
+          "state": "fail",
+          "severity": "major",
+          "quote": "Abnormal proportions, in this case abnormally round and large belly."
+        },
+        {
+          "criterion": "prompt-structure",
+          "state": "fail",
+          "severity": "minor",
+          "quote": "The man is laying ontop of a bed. His huge belly bulges straight up. The women is bringing lots of food",
+          "note": "No environment, cinematography, lighting, or continuity slots."
+        }
+      ]
+    },
+    {
+      "id": "G1",
+      "verdict": "good",
+      "title": "Garden of Plenty character continuity reference",
+      "model": "unknown (source says seedream; file is named openart-...)",
+      "assets": [
+        {
+          "kind": "local",
+          "path": "assets/20261024_190331_openart-02178099502520407b4b942199433a510c68da6d01b36ec849ae6_0_1780995032367_329b3bf9.png",
+          "committed": false
+        }
+      ],
+      "prompt": "Close up photograph depicts a  couple in a try out room in a clothing store, the man has brown hair and fair skin. he is extremely overweight and weighs around 600 pounds. The young white woman. She has a curvy figure. Her hair is brown with blonde highlights. She is wearing bimbo make up and has lip filler. She is wearing a pink crop top that shows cleavage and white jeans. She has large breast implants.. The man is trying on a shirt that\u2019s too tight. He can\u2019t get it over his massive belly. She woman looks concerned at him while he tries to pull it down.The lighting is bright, and the overall scene is casual and intimate. The room has a calm and intimate atmosphere, with neutral tones and soft textures. The photograph captures a moment of gentle care and affection between the two individuals.",
+      "evidence": [
+        { "criterion": "photorealism", "state": "pass", "quote": "Super realistic." },
+        { "criterion": "audience-appeal", "state": "pass", "quote": "Good scenario. Hot woman." },
+        { "criterion": "platform-rules", "state": "pass", "quote": "Follows every rule." },
+        { "criterion": "platform-reception", "state": "pass", "quote": "Did amazing on deviantart." }
+      ]
+    },
+    {
+      "id": "G2",
+      "verdict": "good",
+      "title": "Structured prompt template",
+      "model": "unknown (source says seedream; asset is an openart URL)",
+      "assets": [
+        {
+          "kind": "url",
+          "path": "https://cdn.openart.ai/openart-ai/production/2026-04/create-image/OX6JpUpAw4u4SDWEJ6Ct/0217774079811327f903ef278210a935664acc7f34a222428927a_0_1777407988228_ade60485.jpeg",
+          "archived": false
+        }
+      ],
+      "prompt": "[Subject]: Handsome, 400-pound young Caucasian male in black t-shirt and shorts, alongside a pretty, slim young woman. [Action]: He chugs a jug of cream with his right hand, left hand on his stomach. She watches him with a warm smile. [Environment]: Cozy, modern living room on a plush sofa. [Cinematography]: Wide-angle 24mm lens, eye-level medium-wide shot, f/4 depth of field. [Lighting/Style]: Soft window light, warm cinematic tones, natural indoor atmosphere. [Technical]: Photorealistic, 8k resolution, highly detailed, 4:3 aspect ratio.",
+      "evidence": [
+        {
+          "criterion": "prompt-structure",
+          "state": "pass",
+          "quote": "[Subject] ... [Action] ... [Environment] ... [Cinematography] ... [Lighting/Style] ... [Technical]",
+          "note": "Every slot present, including focal length, aperture, and aspect ratio."
+        },
+        { "criterion": "photorealism", "state": "pass", "quote": "Super realistic." },
+        { "criterion": "lighting-camera-work", "state": "pass", "quote": "[Cinematography]: Wide-angle 24mm lens, eye-level medium-wide shot, f/4 depth of field." },
+        { "criterion": "audience-appeal", "state": "pass", "quote": "Good scenario. Hot woman." },
+        { "criterion": "platform-rules", "state": "pass", "quote": "Follows every rule." }
+      ]
+    },
+    {
+      "id": "G3",
+      "verdict": "good",
+      "title": "Mixed-race couple, bed edge",
+      "model": "unknown (source says seedream; asset is an openart URL)",
+      "assets": [
+        {
+          "kind": "url",
+          "path": "https://cdn.openart.ai/openart-ai/production/2026-04/create-image/OX6JpUpAw4u4SDWEJ6Ct/021777346366409f2dfc9d17a425ad03ee233374d263661b8ccfc_0_1777346379499_fd3df0e7.jpeg",
+          "archived": false
+        }
+      ],
+      "prompt": "Wide angle photograph depicts a young caucasian male sitting on the side of a bed, he is handsome he is extremely overweight and weighs around 400 pounds. He is wearing a black tshirt and shorts. He is in a mixed race relationship A young asian woman she is standing infront of him. They are smoling at eachother",
+      "evidence": [
+        { "criterion": "photorealism", "state": "pass", "quote": "Really realistic." },
+        { "criterion": "lighting-camera-work", "state": "pass", "quote": "Good angles and lighting." },
+        { "criterion": "character-continuity", "state": "pass", "quote": "Good characters." },
+        { "criterion": "audience-appeal", "state": "pass", "quote": "Good characters." }
+      ]
+    }
+  ]
+}

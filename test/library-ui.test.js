@@ -11,7 +11,8 @@ const app = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
 
 test('Library UI contract', () => {
-  assert.match(html, /data-tab="library"/);
+  // The Library is a shared service reachable from every module.
+  assert.match(app, /id: 'library', label: 'Library', icon: '[^']*', tab: 'library'/);
   assert.match(html, /id="panel-library"/);
   assert.match(html, /id="library-loading"/);
   assert.match(html, /id="library-empty"[\s\S]*data\/images/);
@@ -55,4 +56,15 @@ test('Library UI contract', () => {
   assert.match(html, /id="library-modal-close"[^>]*aria-label="Close image details"/);
   assert.match(css, /\.library-card:focus-visible/);
   assert.match(css, /aspect-ratio:\s*4\s*\/\s*3/);
+});
+
+// Character sheet generation is a slow image request. Like every other long
+// Generation Stage step it must register a tracked process, otherwise the
+// floating bottom-right process widget never appears.
+test('Character sheet generation shows the process tracker', () => {
+  assert.match(app, /const processId = startProcess\('Generating character sheet'\)/);
+  assert.match(app, /startProcess\('Generating character reference sheet'\)/);
+  assert.match(app, /startProcess\(`Generating \$\{characters\.length\} character reference sheet\(s\)`\)/);
+  assert.match(app, /updateProcess\(processId, `Generating character sheet \$\{index\} of \$\{characters\.length\}`\)/);
+  assert.match(app, /if \(!ownedProcessId\) finishProcess\(processId\)/);
 });

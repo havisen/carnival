@@ -8,6 +8,9 @@ This is a Node.js application deployed through a DirectAdmin Node.js app. Use No
 - `fieldreviews.js`: persisted field-review results. `apiusage.js`: chat/review usage counters.
 - `db.js`, `story.js`, `assets.js`, `reviews.js`: application storage and domain logic.
 - `public/app.js`, `public/index.html`, `public/styles.css`: browser UI. Keep the existing plain JavaScript architecture.
+- `public/app.js` `MODULES`: the module registry. Carnival is the umbrella, and every screen belongs to a module (`story-studio`, `generate-images`) or to the shared services (`SHARED_TOOLS`: Ideas, Library, Settings, Docs). A module declares its screens, the `switchTab` panel key each screen activates, its workflow step (Story Studio), its `guide` text for the assistant, and whether it carries a story context. Adding a module means adding one registry entry plus the panels it points at — the navigation, the story selector, and the progress overview need no changes. `SHARED_TOOLS` render into the app header (`#header-shared`), preceded by Generate. Generate restores the active module screen and reveals the module row and workflow controls; shared services hide those controls.
+- `GET /api/studio/:projectId/progress`: the Story Studio overview. Each step's status is derived from the data that step edits, so it cannot drift from the work. `attention` must always mean a human decision is waiting, never work that is merely unfinished; `done`/`todo` cover the rest.
+- Bump `?v=` on `styles.css` and `app.js` in `public/index.html` whenever either file changes, or a browser can keep running a stale bundle after a deploy.
 - `test/`: tests with local mock providers and temporary databases.
 
 ## Keep agent work focused

@@ -9,19 +9,57 @@ Run the app locally with **Node 24 or newer** and `npm start`. After updating
 runtime files, restart the app and refresh the browser. Preserve the database
 and encryption secret.
 
-A self-contained web app with six tabs:
+A self-contained web app organized as **modules under the Carnival umbrella**. One
+Node application and one database hold everything; each module owns its screens,
+its navigation, its wording, and its assistant guidance.
 
-1. **💡 Idea Generator** — generate ideas with the DeepSeek API.
-2. **🗂️ Project Management** — turn ideas into trackable projects.
-3. **📚 Reference Stage** — build structured reference material and a scene outline.
-4. **🎬 Generation Stage** — turn scenes into photorealistic image prompts and images.
-5. **🖼️ Library** — browse the image assets stored under `data/images`.
-6. **🔑 AI APIs** — manage provider keys and choose the default text and image models.
+**Story Studio** — one story at a time, through the whole workflow:
 
-Accounts, sessions, per-user DeepSeek and BytePlus API keys, model preferences, and
-projects are stored in a local SQLite database. The browser never receives the
-stored keys: generation runs on the server with the keys belonging to the signed-in
-user.
+1. **🗂️ Projects** — every story you are working on.
+2. **💡 Idea** — the idea and the brief of the current story.
+3. **📚 References** — the shared reference material every image prompt is built from.
+4. **🧑‍🎨 Characters & Locations** — the cast, the places, the look, and the character sheets.
+5. **🎬 Scenes** — the scene outline, the action references, and continuity.
+6. **🖼️ Generate** — one image prompt per action reference, then the images.
+7. **✅ Review** — everything still waiting for a human decision.
+
+**Generate Images** — character art with or without a story:
+
+1. **🧑‍🎨 Character Maker** — reusable characters, saved for every story.
+2. **🖼 Standalone Images** — prompt to image, with no project.
+
+The header **📚 Generate** button opens Story Studio and Generate Images, with the
+workflow controls below. Shared services hide those controls; Generate brings back
+the last module screen, its selected view, and the current story.
+
+**Shared services** serve every module and sit in the app header, beside your
+account: **💡 Ideas** (create stories), the **🖼️ Library**, **🔑 Settings**, and
+**📖 Docs**. Accounts, sessions, provider keys, usage tracking, model preferences,
+and projects are shared. The browser never receives the stored keys: generation
+runs on the server with the keys belonging to the signed-in user.
+
+The **Current story** selector in the Story Studio bar is one choice that drives
+every story screen, and the progress pill beside it summarises the story: how many
+of the six steps are done, how many are waiting for a decision, and the next
+action. Clicking it opens the full overview, where every step lists what is
+finished, what needs approval, and what to do next. Progress is always derived
+from the work itself — a step reports `attention` only when a person has to make a
+decision, never for work that simply has not been done yet — so nothing can drift
+from the underlying records.
+
+Screens that earlier versions listed as top-level tabs now live here:
+
+| Earlier name | Now |
+| --- | --- |
+| Idea Generator | Shared service **💡 Ideas** |
+| Project Management | **Story Studio ▸ Projects** |
+| Reference Stage | **Story Studio ▸ References** |
+| Story Workspace | **Story Studio ▸ Idea / Characters & Locations / Scenes** (one screen per step) |
+| Generation Stage | **Story Studio ▸ Generate** (prompt review moved to **▸ Review**) |
+| Character maker | **Generate Images ▸ Character Maker** |
+| Project characters | **Story Studio ▸ Characters & Locations ▸ Character images** |
+| Standalone images | **Generate Images ▸ Standalone Images** (the header **Generate** button opens the modules) |
+| Library, Settings, Docs | Shared services **🖼️ Library**, **🔑 Settings**, **📖 Docs** |
 
 ## Requirements
 
@@ -119,7 +157,7 @@ to the browser — the UI only receives a masked hint such as `sk-…a1b2`.
 | **Reference Material** | Structured seven-section document generated in Reference Stage; editable and saved explicitly. |
 | **Character References** | One generated reference document per character, shown under Reference Material. |
 | **Scene Outline** | Array of scenes (`title`, `action`, `location`, `characters`) stored with the project. |
-| **Generation Prompts** | One photorealistic prompt per scene, stored in scene order. |
+| **Generation Prompts** | One photorealistic image prompt per action reference, ordered, with per-prompt approval, review flags, and the rendered image. |
 | **Scene Images** | Compatibility projection of the current asset version for each scene; authoritative files are tracked in the asset registry. |
 | **Story Brief** | Canonical story root: title, logline, premise, tone, genre, audience, and setting summary. |
 | **Character Bibles** | Stable-ID canonical character records with gender, age, appearance, wardrobe, continuity notes, and approval state. |
@@ -231,22 +269,146 @@ genders are preserved when regenerating. Reference generation uses DeepSeek 4 Pr
 and normalizes common JSON variants such as object-shaped reference material or
 snake_case field names. It never silently falls back to a different model.
 
+## Character maker tab
+
+Standalone characters, for designing a character and its reference image before
+(or without) a project.
+
+1. Open **🧑‍🎨 Character maker** and click **＋ New character**.
+2. Give it a **name** and a **description**. The description is the prompt's
+   character reference: age, build, height, hair, eyes, skin, wardrobe, and
+   distinguishing details.
+3. Choose the **image type**:
+   - **Portrait** — one photorealistic head-to-mid-thigh image, no layout
+     reference attached.
+   - **Character sheet (3 views)** — the same shared front / three-quarter /
+     side layout template the Story Workspace uses, attached as the reference
+     image.
+4. Choose an **image size** (1K, 1.5K, or 2K) and click **✨ Generate image**.
+   The floating **Processing** widget shows the running generation, exactly like
+   the other long steps.
+5. Every generation appends a **version**. Click **Make final** on the one to
+   keep, or **Copy prompt** to reuse the wording.
+
+Characters belong to the signed-in user and to **no project**; other accounts
+cannot read, generate for, or download them. Deleting a character deletes its
+versions and removes its images from `data/images/characters/<characterId>/`.
+
+**"Final" is not an approval.** It only marks which image is this character's
+current reference. It does not touch the review checklist, publication decision,
+or safe-cover state in the Library, and it never marks an asset as reviewed.
+
+## Project characters tab
+
+The same builder, scoped to one project and meant for building a project's cast.
+
+1. Open **🎭 Project characters** and choose a **project** (completed projects are
+   not listed).
+2. Click **＋ New character**, then give it a **name** and a **description**.
+3. Choose **Portrait** or **Character sheet (3 views)**, pick an image size, and
+   click **✨ Generate image**.
+4. Every generation appends a version. Click **Make final** on the one to keep, or
+   **Copy prompt** to reuse the wording.
+
+**Reuse from Character maker** copies the final image of a standalone
+[Character maker](#character-maker-tab) character into the selected project
+character. The bytes are copied into that character's own folder rather than
+linked, so editing or deleting the standalone character afterwards never affects
+the project; the copy becomes the project character's new final version.
+
+The two tabs never share records: characters created with a project have a
+`project_id` and are hidden from the Character maker tab, and standalone
+characters (no `project_id`) are hidden here. Deleting a project cascades to its
+project characters; deleting a character deletes its versions and its images.
+Character images live in `data/images/characters/<characterId>/` and are **not**
+registered as Library assets (the Library only indexes per-project image
+folders), so copy an image into a project yourself if you want it reviewed,
+tagged, or published.
+
+## Standalone image generator tab
+
+Prompt-to-image with **no project**, for one-off art, tests, and covers.
+
+1. Open **🖼 Standalone images** and write a **prompt** (subject, setting,
+   lighting, lens, mood, style).
+2. Choose an **image size** and how many **images** to generate (1–4). Multi-image
+   runs are sequential and each one appears in the gallery as it finishes, with
+   the processing widget tracking `image 2 of 4`.
+3. Click **✨ Generate**.
+
+**Reference images.** Attach up to 10 references so the result follows a
+character, place, or look: pick a **Library** image, a final **Character maker**
+image, or **upload** a file (PNG/JPEG/WebP, 20 MB). The server resolves each one
+to a data URL and re-checks ownership, so a client can never name an image it
+does not own. Reference images are attached as visual guidance and are never
+modified. They are capped at 24 MB in total per request.
+
+**Prompt presets.** Save the current prompt under a name, then **Insert** it into
+the prompt box later. Presets are per user.
+
+### Every generated image is a Library asset
+
+Generation also registers the image in the [Library](#library-tab) through the
+asset registry, as a project-less asset. It therefore appears in the Library as
+**unassigned** (the Library's *Unassigned* filter lists it) with the normal review
+checklist, tags, collections, and publication decision. **🔎 Library** on any
+gallery card opens it there.
+
+The asset API accepts a `projectId` for one of these assets, but the Library UI
+does not yet expose a project control (it can set tags, collections, and an
+episode), so images are not filed into projects from the browser yet.
+
+Deleting an image from this tab deletes the file, the generation record, and its
+Library asset. Two guards protect work that would otherwise be lost:
+
+- An image that has been **reviewed** (a review record or a publication decision
+  exists) cannot be deleted here — the API answers `409 REVIEWED_ASSET`. Clear the
+  review in the Library first.
+- An image that has been **filed into a project** through the asset API cannot be
+  deleted here — `409 ASSET_IN_PROJECT`, because it now belongs to that project.
+
+Review records themselves are never deleted by this tab.
+
+Images live in `data/images/characters/`-style UUID folders under
+`data/images/generations/<generationId>/`, and uploaded references under
+`data/images/generations/references/<referenceId>/`. Both are skipped by the
+Library filesystem scan, which is why generated images appear in the Library only
+through their registered asset row.
+
 ## Generation Stage tab
 
-1. Choose a project whose stage is **Generation Stage**.
-2. Its **Idea**, **Reference Material**, and **Scene Outline** load automatically.
-3. Edit scenes as cards (title, action, location, characters) and use
-   **Save outline**.
-4. Click **✨ Generate Scene Prompts**. DeepSeek receives the reference material,
-   character references, and scene outline and returns one JSON prompt per scene.
-5. Each prompt card supports **Save**, **Copy**, **Regenerate**,
-   **⬆ Upload image**, and **🖼 Generate image**. Prompts are stored with the
-   project in scene order.
-6. Uploads accept PNG, JPEG, or WebP files up to 20 MB. They are saved under
-   `data/images/`, attached to the scene/project, and shown as project thumbnails.
-7. Image generation uses **Seedream 5.0 Pro** with the saved BytePlus key.
-   Images are downloaded and stored under `data/images/`, then served through an
-   authenticated route. Seedream 5.0 Pro supports 1K/1.5K/2K.
+The Generation Stage is four explicit steps over one shared reference set. The
+character references and the character reference sheets are the same for every
+image in the story, which is what keeps the characters consistent.
+
+1. Choose a project whose stage is **Generation Stage**. Its **References** card
+   lists the character references, the final character reference sheets, the
+   action references, and the location references, and names any blocker.
+2. Click **✨ Build Image Prompts**. DeepSeek receives the reference material,
+   the character references, the character reference sheets, the action
+   references, and the location references, and returns exactly one image prompt
+   per action reference. Nothing is saved yet: either **💾 Save image prompts**
+   or **↻ Generate again**.
+3. Approve every saved prompt individually with **✓ Approve**. Editing a prompt
+   clears its approval and answers that prompt's review flags.
+4. Click **🔎 Review the prompts**. A reviewer agent compares every image prompt
+   with the character references, the character reference sheets, the action
+   references, and the location references, and reports concrete
+   inconsistencies. Each flag must be **✎ Edit prompt**-ed away or **Dismiss**-ed;
+   dismissed and edited flags are kept as history.
+5. Click **🖼 Run image generation process**. It renders every prompt one by one
+   with that image's character reference sheets attached, and files each result
+   into the project and the Library. Editing a prompt afterwards makes its
+   existing image stale rather than silently current.
+
+Saved prompts, approvals, review flags, and rendered images persist in SQLite, so
+reopening or signing in again does not lose data. Updates are partial, so saving
+prompts does not overwrite reference material or the story workspace.
+
+Uploads accept PNG, JPEG, or WebP files up to 20 MB. Images are saved under
+`data/images/`, attached to the project, and served through an authenticated
+route. Image generation uses **Seedream 5.0 Pro** with the saved BytePlus key;
+Seedream 5.0 Pro supports 1K/1.5K/2K.
 
 ## Library tab
 
@@ -413,10 +575,17 @@ process. Run one Node instance, or move to a shared database before scaling out.
 | `POST` | `/api/projects/import` | One-shot import of legacy local projects. |
 | `POST` | `/api/generate` | Generate ideas using the signed-in user's saved key. |
 | `POST` | `/api/reference` | Generate structured reference material and scenes for a project. |
-| `POST` | `/api/generation/prompts` | Generate one image prompt per scene and save them. |
-| `POST` | `/api/generation/prompt` | Regenerate one scene prompt. |
+| `POST` | `/api/generation/build` | Build one image prompt per action reference from the shared references (draft, not saved). |
+| `GET` | `/api/generation/:projectId` | Generation Stage state: reference bundle, blockers, and the saved task. |
+| `PUT` | `/api/generation/:projectId/prompts` | Save the built image prompts. |
+| `PUT` | `/api/generation/:projectId/prompts/:promptId` | Edit one saved image prompt (clears its approval and answers its flags). |
+| `POST` | `/api/generation/:projectId/prompts/:promptId/approval` | Approve or unapprove one image prompt. |
+| `POST` | `/api/generation/review` | Review the prompts against the references and store the flags. |
+| `POST` | `/api/generation/:projectId/prompts/:promptId/flags/:flagId` | Dismiss one review flag. |
+| `POST` | `/api/generation/images/one` | Render one image prompt with its reference sheets and file it into the project and Library. |
 | `POST` | `/api/images/generate` | Generate a scene image with the selected Seedream model. |
 | `POST` | `/api/images/upload` | Upload a PNG/JPEG/WebP scene image to a project. |
+| `GET` | `/api/studio/:projectId/progress` | Story Studio overview for one story: one status per workflow step, the counts, and the next action. |
 | `GET` | `/api/library` | List discoverable image assets under `data/images`. |
 | `GET` | `/api/library/file?path=...` | Serve an allowlisted library image with root containment. |
 | `GET` | `/api/assets` | List authoritative assets with project/episode/collection/tag/type/status/search/duplicate/missing filters. |
@@ -443,6 +612,19 @@ process. Run one Node instance, or move to a shared database before scaling out.
 | `GET` | `/api/story/:projectId/validate` | Return continuity warnings without changing data. |
 | `GET` | `/api/image/:projectId/:file` | Serve a generated image to its owner. |
 | `GET` | `/api/health` | Liveness check (includes the app version). |
+| `GET` / `POST` | `/api/characters` | List / create standalone Character maker characters. `?projectId=` lists one project's characters instead. |
+| `PUT` / `DELETE` | `/api/characters/:id` | Rename, re-describe, or delete a character (and its images). |
+| `POST` | `/api/characters/:id/generate` | Generate a portrait or a three-view character sheet as a new version. |
+| `POST` | `/api/characters/:id/versions/:versionId/promote` | Mark one version final (exclusive per character). |
+| `POST` | `/api/characters/:id/versions/import` | Copy another version's image into this character as a new final version. |
+| `GET` | `/api/characters/:id/image/:file` | Serve a generated character image to its owner. |
+| `GET` / `POST` | `/api/generations` | List generations with presets and references / generate one image from a prompt (up to 10 reference images). |
+| `DELETE` | `/api/generations/:id` | Delete a generation, its file, and its Library asset (refused once reviewed or filed into a project). |
+| `GET` | `/api/generations/:id/image/:file` | Serve a generated image to its owner. |
+| `GET` / `POST` | `/api/generation-presets` | List / create prompt presets. |
+| `PUT` / `DELETE` | `/api/generation-presets/:id` | Rename or delete a prompt preset. |
+| `POST` | `/api/generation-references` | Upload a reference image for generation. |
+| `GET` / `DELETE` | `/api/generation-references/:id/image`, `/api/generation-references/:id` | Serve or delete an uploaded reference image. |
 
 ## Project layout
 
@@ -450,8 +632,13 @@ process. Run one Node instance, or move to a shared database before scaling out.
 - `db.js` — SQLite schema and prepared queries (users, sessions, projects).
 - `assets.js` — authoritative asset registry, migration, versions, duplicates, and organization.
 - `story.js` — structured story workspace, reference bibles, scene links, prompt versions, and continuity validation.
+- `characters.js` — standalone and project-scoped Character maker characters and their generated image versions.
+- `standalone.js` — standalone image generations, prompt presets, and uploaded reference images.
 - `security.js` — password hashing, API-key encryption, cookie helpers.
 - `public/` — the entire front end (`index.html`, `styles.css`, `app.js`).
+  `app.js` holds the module registry (`MODULES`), which declares each module's
+  screens, the panel each screen activates, and its assistant guidance; adding a
+  module means adding one registry entry plus the panels it points at.
 - `scripts/` — dependency-free asset backup and verification utilities.
 - `test/` — built-in `node:test` coverage for auth, assets, and Library.
 - `data/` — created at runtime; holds the database, backups, secret, and generated images (git-ignored).

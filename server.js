@@ -11,8 +11,11 @@ const assetStore = require('./assets').init(db.db, db.DATA_DIR, db.DB_PATH);
 const storyModule = require('./story');
 const { normalizeStoryWorkspace } = storyModule;
 const storyStore = storyModule.init(db.db, db.DB_PATH);
+const generationStore = require('./generation').init(db.db);
 const reviewStore = require('./reviews').init(db.db, storyStore, db.DB_PATH);
 const fieldReviewStore = require('./fieldreviews').init(db.db);
+const characterStore = require('./characters').init(db.db);
+const standaloneStore = require('./standalone').init(db.db);
 const { init: initApiUsage, normalizeUsage } = require('./apiusage');
 const apiUsageStore = initApiUsage(db.db);
 const requestTracker = require('./track').init(db.db);
@@ -895,8 +898,22 @@ const GENERATION_SYSTEM_RULES = [
   'Prefer realistic, casual, everyday moments and photographic realism.',
   'Do not use code fences, numbering, or commentary outside the JSON.',
 ].join(' ');
-const GENERATION_SYSTEM_PROMPT = `${GENERATION_SYSTEM_RULES} Return ONLY valid JSON in the form {"prompts": ["prompt for scene 1", "prompt for scene 2", ...]} with exactly one prompt per scene, in the same order as the scenes.`;
-const SINGLE_SCENE_GENERATION_SYSTEM_PROMPT = `${GENERATION_SYSTEM_RULES} Return ONLY valid JSON in the form {"prompt":"one complete image-generation prompt"} for the supplied scene.`;
+const GENERATION_BUILD_SYSTEM_PROMPT = [
+  GENERATION_SYSTEM_RULES,
+  'Write one production-ready image prompt per action reference, in the same order.',
+  'The same character references and character reference sheets apply to every image, so repeat the exact canonical wording for a character every time that character appears.',
+  'Use only the supplied references: never invent characters, wardrobe, props, or locations, and never describe text, logos, or watermarks.',
+  'Return ONLY valid JSON in the form {"prompts": ["prompt for image 1", "prompt for image 2", ...]} with exactly one prompt per action reference.',
+].join(' ');
+
+const GENERATION_REVIEW_SYSTEM_PROMPT = [
+  'You are a meticulous visual-continuity reviewer inside the Carnival project app.',
+  'Compare every image prompt against the supplied character references, character reference sheets, action references, and location references.',
+  'Report only concrete inconsistencies: a character described differently from their reference, the wrong or missing wardrobe, an action that contradicts its action reference, a location that contradicts its location reference or is missing, characters that are missing or added, or details that break continuity between images.',
+  'Return ONLY valid JSON in the form {"flags":[{"promptId":"<image prompt id>","severity":"error"|"warning"|"info","message":"the specific inconsistency"}]}.',
+  'Copy each promptId exactly as supplied. Return an empty flags array when every prompt agrees with the references.',
+  'Never invent facts that are not in the supplied content, and never claim that a human reviewed or approved anything.',
+].join(' ');
 
 const CHAT_SYSTEM_PROMPTS = {
   guide: [
@@ -975,6 +992,19 @@ function buildCharacterSheetPrompt(character, reference) {
   parts.push(`Character reference: ${reference}`);
   parts.push(CHARACTER_SHEET_TEMPLATE, 'Photographic realism.');
   parts.push('Avoid: text, watermark, extra limbs, distorted face.');
+  return parts.join('\n').slice(0, 30000);
+}
+
+// Single-image alternative for the Character maker tab. No layout reference is
+// attached: this is one portrait, not the three-view sheet.
+function buildCharacterPortraitPrompt(character, reference) {
+  const parts = [];
+  parts.push(`Photorealistic single-subject character reference portrait of ${character.name}.`);
+  parts.push(`Character reference: ${reference}`);
+  parts.push('Exactly one person, framed from the head to about mid-thigh, standing and facing the camera, relaxed neutral expression, looking at the lens.');
+  parts.push('Seamless light gray studio background, soft even lighting, sharp focus on the face, natural skin texture, realistic fabric detail.');
+  parts.push('Photographic realism, casting-photo framing.');
+  parts.push('Avoid: text, watermark, extra limbs, duplicate people, distorted face, cartoon or illustration style.');
   return parts.join('\n').slice(0, 30000);
 }
 
@@ -2026,11 +2056,20 @@ async function requestChatUpstream({ provider, endpoint, apiKey, model, system, 
   return { content: content.trim(), model: parsed && parsed.model ? parsed.model : model, usage };
 }
 
+// Each module scopes the Guide: the same assistant answers differently in Story
+// Studio than in Generate Images. This is guidance for the chat, never a
+// replacement for the context the user saved in Settings.
+const MODULE_GUIDANCE = {
+  'story-studio': 'The user is working in Story Studio, where one story moves through the steps Idea, References, Characters & Locations, Scenes, Generate, and Review, in that order. Keep every answer about that story, and say which step an answer belongs to.',
+  'generate-images': 'The user is working in Generate Images, which holds the Character Maker and the Standalone image generator. Those tools belong to no story unless the user is reusing one.',
+};
+
 async function handleChat(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
 
   const mode = body.mode === 'reviewer' ? 'reviewer' : 'guide';
+  const moduleId = typeof body.module === 'string' && MODULE_GUIDANCE[body.module] ? body.module : '';
   const rawMessages = Array.isArray(body.messages) ? body.messages : [];
   const history = rawMessages
     .slice(-20)
@@ -2057,6 +2096,7 @@ async function handleChat(req, res) {
   const system = [
     CHAT_SYSTEM_PROMPTS[mode],
     ...(target.configuredContext ? [target.configuredContext] : []),
+    ...(moduleId ? [MODULE_GUIDANCE[moduleId]] : []),
     ...(projectContext ? [`Project context:\n${projectContext}`] : []),
   ].join('\n\n');
 
@@ -2282,28 +2322,216 @@ async function handleReference(req, res) {
   });
 }
 
-function scenePromptResponseData(structured) {
-  if (structured.completion.finishReason === 'length') {
-    fail(502, 'DeepSeek reached the output limit before finishing the scene prompt. Your saved prompts were kept.', 'PROMPT_OUTPUT_LIMIT');
+// ---------------------------------------------------------------------------
+// Generation Stage: image prompts, per-prompt approval, project review, images
+// ---------------------------------------------------------------------------
+
+function generationProject(req, projectIdValue, { requireStage = false } = {}) {
+  const session = requireUser(req);
+  const projectId = typeof projectIdValue === 'string' ? projectIdValue.trim() : '';
+  if (!projectId) fail(400, 'Choose a Generation Stage project.');
+  const project = db.getProject(session.user_id, projectId);
+  if (!project) fail(404, 'Project not found.');
+  if (requireStage && project.stage !== 'Generation Stage') {
+    fail(409, 'Only a project in Generation Stage can do this.', 'WRONG_STAGE');
   }
-  if (!structured.completion.content.trim()) {
-    fail(502, 'DeepSeek returned no final prompt content. Your saved prompts were kept.', 'EMPTY_PROMPT_RESPONSE');
-  }
-  return structured.data;
+  return { session, project };
 }
 
-function singleScenePrompt(data) {
-  let value = data;
-  if (data && Array.isArray(data.prompts)) {
-    value = data.prompts.length === 1 ? data.prompts[0] : null;
-  } else if (Array.isArray(data)) {
-    value = data.length === 1 ? data[0] : null;
+/**
+ * Assemble the reference material the Generation Stage builds from:
+ * the shared character references, the final character reference sheets,
+ * the action references, and the location references. The same bundle feeds
+ * prompt building, the project review, and the image run, so all three steps
+ * judge the exact same inputs.
+ */
+function generationReferenceBundle(userId, project) {
+  const story = storyStore.getStory(userId, project.id) || {};
+  const worksheet = story.worksheet || { actions: [], locations: [] };
+  const actions = (Array.isArray(worksheet.actions) ? worksheet.actions : [])
+    .map((item, index) => ({
+      index,
+      action: String((item && item.action) || '').trim(),
+      locationSentence: String((item && item.locationSentence) || '').trim(),
+      characters: Array.isArray(item && item.characters)
+        ? item.characters.map((name) => String(name || '').trim()).filter(Boolean)
+        : [],
+    }))
+    .filter((item) => item.action);
+  const locations = (Array.isArray(worksheet.locations) ? worksheet.locations : []).map((item, index) => ({
+    index,
+    name: String((item && item.name) || '').trim(),
+    description: String((item && item.description) || '').trim(),
+  }));
+
+  const finalSheets = new Map();
+  for (const sheet of Array.isArray(story.characterSheets) ? story.characterSheets : []) {
+    if (sheet.status !== 'final') continue;
+    const current = finalSheets.get(sheet.characterId);
+    if (!current || (sheet.version || 0) > (current.version || 0)) finalSheets.set(sheet.characterId, sheet);
   }
-  return typeof value === 'string' ? value.trim()
-    : value && typeof value.prompt === 'string' ? value.prompt.trim() : '';
+
+  const legacy = new Map((project.characterReferences || [])
+    .filter((item) => item && item.name)
+    .map((item) => [String(item.name).toLowerCase(), item]));
+  const candidates = [];
+  const pushCharacter = (name, gender, referenceMaterial, approved, sheet) => {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) return;
+    candidates.push({
+      key,
+      name: String(name),
+      gender: gender || '',
+      referenceMaterial: String(referenceMaterial || '').trim(),
+      approved: Boolean(approved),
+      sheet: sheet || null,
+    });
+  };
+  for (const character of story.characters || []) {
+    const source = legacy.get(String(character.name).toLowerCase());
+    pushCharacter(
+      character.name,
+      character.gender,
+      (source && source.referenceMaterial)
+        || character.legacyMaterial
+        || [character.appearance, character.wardrobe, character.continuityNotes].filter(Boolean).join('. '),
+      character.approved,
+      finalSheets.get(character.id) || null
+    );
+  }
+  for (const item of project.characterReferences || []) {
+    if (!item || !item.name) continue;
+    pushCharacter(item.name, item.gender, item.referenceMaterial, false, null);
+  }
+
+  // A name can appear twice when a project migrated a legacy character
+  // reference as well as a Story Workspace character. The entry that actually
+  // carries a final reference sheet is the one the images must use.
+  const preferred = new Map();
+  for (const candidate of candidates) {
+    const current = preferred.get(candidate.key);
+    if (!current) {
+      preferred.set(candidate.key, candidate);
+      continue;
+    }
+    const candidateWins = (!current.sheet && candidate.sheet)
+      || (Boolean(current.sheet) === Boolean(candidate.sheet) && !current.approved && candidate.approved);
+    if (candidateWins) {
+      if (!candidate.referenceMaterial) candidate.referenceMaterial = current.referenceMaterial;
+      preferred.set(candidate.key, candidate);
+    } else if (!current.referenceMaterial && candidate.referenceMaterial) {
+      current.referenceMaterial = candidate.referenceMaterial;
+    }
+  }
+  const characters = Array.from(preferred.values()).map((character) => ({
+    id: '',
+    name: character.name,
+    gender: character.gender,
+    referenceMaterial: character.referenceMaterial,
+    approved: character.approved,
+    sheet: character.sheet
+      ? {
+        id: character.sheet.id,
+        file: character.sheet.file,
+        version: character.sheet.version,
+        mime: character.sheet.mime || 'image/png',
+      }
+      : null,
+  }));
+
+  const blockers = [];
+  if (!String(project.referenceMaterial || '').trim()) {
+    blockers.push({ code: 'referenceMaterial', step: 'build', message: 'Reference material is missing. Generate it in Reference Stage first.' });
+  }
+  if (!characters.length) {
+    blockers.push({ code: 'characterReferences', step: 'build', message: 'Character references are missing. Generate them in Reference Stage first.' });
+  }
+  if (!actions.length) {
+    blockers.push({ code: 'actionReferences', step: 'build', message: 'Action references are missing. Generate and save them in the Story Workspace first.' });
+  }
+  if (!locations.length || locations.length !== actions.length) {
+    blockers.push({ code: 'locationReferences', step: 'build', message: 'Location references are missing or do not match the action references. Generate and save them in the Story Workspace first.' });
+  }
+  const byName = new Map(characters.map((character) => [String(character.name).toLowerCase(), character]));
+  for (const action of actions) {
+    for (const name of action.characters) {
+      const key = String(name).toLowerCase();
+      const character = byName.get(key);
+      if (character && character.sheet) continue;
+      const code = `characterSheet:${key}`;
+      if (blockers.some((item) => item.code === code)) continue;
+      blockers.push({
+        code,
+        step: 'images',
+        message: `"${name}" has no final character reference sheet. Add one in the Story Workspace so it can be used for every image.`,
+      });
+    }
+  }
+
+  return {
+    referenceMaterial: String(project.referenceMaterial || '').trim(),
+    characters,
+    actions,
+    locations,
+    sheetCount: characters.filter((character) => character.sheet).length,
+    blockers,
+    ready: {
+      build: !blockers.some((item) => item.step === 'build'),
+      images: !blockers.length,
+    },
+  };
 }
 
-async function handleGenerationPrompts(req, res) {
+/** The final character reference sheets that belong to one image prompt. */
+function generationReferenceImages(project, references, prompt) {
+  const byName = new Map(references.characters.map((character) => [String(character.name).toLowerCase(), character]));
+  const images = [];
+  for (const name of prompt.characters || []) {
+    const character = byName.get(String(name).toLowerCase());
+    const sheet = character && character.sheet;
+    if (!sheet) continue;
+    try {
+      const data = fs.readFileSync(path.join(IMAGE_DIR, project.id, sheet.file));
+      images.push(`data:${sheet.mime || 'image/png'};base64,${data.toString('base64')}`);
+    } catch (_) { /* a sheet file that is gone is simply not attached */ }
+  }
+  return images.slice(0, 10);
+}
+
+function generationPromptList(value, count) {
+  const list = Array.isArray(value)
+    ? value
+    : value && Array.isArray(value.prompts)
+      ? value.prompts
+      : null;
+  if (!list) fail(502, 'The image-prompt response was unreadable. Build the prompts again.', 'NO_PROMPTS');
+  if (list.length !== count) {
+    fail(502, `The build returned ${list.length} prompt(s) for ${count} image(s). Build the prompts again.`, 'PROMPT_COUNT_MISMATCH');
+  }
+  return list.map((item, index) => {
+    const prompt = typeof item === 'string'
+      ? item.trim()
+      : item && typeof item.prompt === 'string'
+        ? item.prompt.trim()
+        : '';
+    if (!prompt) fail(502, `The build returned an empty prompt for image ${index + 1}.`, 'NO_PROMPTS');
+    return prompt.slice(0, generationStore.MAX_PROMPT_CHARS);
+  });
+}
+
+function handleGenerationState(req, res, projectId) {
+  const { session, project } = generationProject(req, projectId);
+  const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
+  return sendJSON(res, 200, {
+    project: { id: project.id, title: project.title, stage: project.stage, status: project.status },
+    references: generationReferenceBundle(session.user_id, project),
+    task: generationStore.getTask(session.user_id, project.id),
+    imageModel,
+    imageSizes: IMAGE_MODEL_SIZES.get(imageModel) || ['2K'],
+  });
+}
+
+async function handleGenerationBuild(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
 
@@ -2315,15 +2543,11 @@ async function handleGenerationPrompts(req, res) {
     fail(500, 'Your saved API key could not be read. Please save it again.', 'KEY_UNREADABLE');
   }
 
-  const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
-  if (!projectId) fail(400, 'Choose a project in Generation Stage.');
-
-  const project = db.getProject(session.user_id, projectId);
-  if (!project) fail(404, 'Project not found.');
-
-  const reference = (project.referenceMaterial || '').trim();
-  if (!reference) {
-    fail(409, 'This project has no saved reference material. Generate it in Reference Stage first.', 'REFERENCE_REQUIRED');
+  const { project } = generationProject(req, body.projectId, { requireStage: true });
+  const references = generationReferenceBundle(session.user_id, project);
+  if (!references.ready.build) {
+    const blocker = references.blockers.find((item) => item.step === 'build');
+    fail(409, blocker.message, 'GENERATION_REFERENCES_MISSING');
   }
 
   const model = typeof body.model === 'string' && body.model.trim()
@@ -2334,43 +2558,28 @@ async function handleGenerationPrompts(req, res) {
   }
   if (model.length > 100) fail(400, 'Model name is too long.');
 
-  const scenes = body.scenes !== undefined ? cleanSceneList(body.scenes) : project.scenes;
-  if (!scenes.length) {
-    fail(400, 'Add at least one scene before generating prompts.', 'NO_SCENES');
-  }
-
-  const promptScenes = scenes.map((scene) => ({
-    title: scene.title,
-    action: scene.action,
-    location: scene.location,
-    characters: scene.characters,
-  }));
-
-  const characterReferenceText = Array.isArray(project.characterReferences) && project.characterReferences.length
-    ? `Character references (JSON):\n${JSON.stringify(project.characterReferences, null, 2)}`
-    : null;
-  const storyContext = storyStore.getStory(session.user_id, projectId);
-  const structuredReferenceText = storyContext
-    ? `Structured continuity references (JSON):\n${JSON.stringify({
-      brief: storyContext.brief,
-      characters: storyContext.characters,
-      locations: storyContext.locations,
-      styles: storyContext.styles,
-    }, null, 2)}`
-    : null;
-
   const userContent = [
-    `Reference material:\n${reference}`,
-    ...(characterReferenceText ? [characterReferenceText] : []),
-    ...(structuredReferenceText ? [structuredReferenceText] : []),
-    `Scenes (JSON, in chronological order):\n${JSON.stringify(promptScenes, null, 2)}`,
-    `Write exactly ${scenes.length} image prompts, one per scene, in this order. Return {"prompts":[...]} as JSON only.`,
+    `Reference material:\n${references.referenceMaterial}`,
+    `Character references (JSON, identical for every image):\n${JSON.stringify(
+      references.characters.map((character) => ({
+        name: character.name,
+        gender: character.gender,
+        referenceMaterial: character.referenceMaterial,
+      })), null, 2)}`,
+    `Character reference sheets (JSON, one final sheet per character, already used as the visual reference for every image):\n${JSON.stringify(
+      references.characters.map((character) => ({
+        name: character.name,
+        sheetVersion: character.sheet ? character.sheet.version : null,
+      })), null, 2)}`,
+    `Action references (JSON, one image each, in order):\n${JSON.stringify(references.actions, null, 2)}`,
+    `Location references (JSON, in the same order as the action references):\n${JSON.stringify(references.locations, null, 2)}`,
+    `Write exactly ${references.actions.length} image prompts, one per action reference, in this order. Return {"prompts":[...]} as JSON only.`,
   ].join('\n\n');
 
   const structured = await callDeepSeekJson(apiKey, {
     model,
     messages: [
-      { role: 'system', content: GENERATION_SYSTEM_PROMPT },
+      { role: 'system', content: GENERATION_BUILD_SYSTEM_PROMPT },
       { role: 'user', content: userContent },
     ],
     temperature: 0.7,
@@ -2378,200 +2587,253 @@ async function handleGenerationPrompts(req, res) {
     thinking: { type: 'disabled' },
     response_format: { type: 'json_object' },
   });
-
-  const data = scenePromptResponseData(structured);
-  const promptList = Array.isArray(data)
-    ? data
-    : data && Array.isArray(data.prompts)
-      ? data.prompts
-      : null;
-
-  if (!promptList) {
-    fail(502, 'DeepSeek returned an unreadable scene-prompt response. Try again.', 'NO_PROMPTS');
-  }
-  if (promptList.length !== scenes.length) {
-    fail(
-      502,
-      `DeepSeek returned ${promptList.length} prompt(s) for ${scenes.length} scene(s). Regenerate the prompts.`,
-      'PROMPT_COUNT_MISMATCH'
-    );
+  if (structured.completion.finishReason === 'length') {
+    fail(502, 'DeepSeek reached the output limit before finishing the image prompts. Try building again.', 'PROMPT_OUTPUT_LIMIT');
   }
 
-  const prompts = scenes.map((scene, index) => {
-    const item = promptList[index];
-    const prompt = typeof item === 'string'
-      ? item.trim()
-      : item && typeof item.prompt === 'string'
-        ? item.prompt.trim()
-        : '';
-    if (!prompt) {
-      fail(502, `DeepSeek returned an empty prompt for scene ${index + 1}.`, 'NO_PROMPTS');
-    }
-    return { sceneId: scene.id, prompt: prompt.slice(0, 30000) };
+  const prompts = generationPromptList(structured.data, references.actions.length).map((prompt, index) => {
+    const action = references.actions[index];
+    const location = references.locations[index] || { name: '', description: '' };
+    return {
+      index,
+      action: action.action,
+      locationSentence: action.locationSentence,
+      characters: action.characters,
+      locationName: location.name || '',
+      locationDescription: location.description || '',
+      prompt,
+    };
   });
 
-  const updated = db.updateProject(session.user_id, projectId, {
-    scenes,
-    generation_prompts: prompts,
-  });
-  if (!updated) fail(404, 'Project not found.');
+  return sendJSON(res, 200, { prompts, model: structured.model, fallback: structured.fallback });
+}
 
-  const story = storyStore.getStory(session.user_id, projectId) || { scenes: [] };
-  const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
-  const imageSize = (IMAGE_MODEL_SIZES.get(imageModel) || ['2K'])[0];
-  for (const prompt of updated.generationPrompts) {
-    const scene = story.scenes.find((item) => item.id === prompt.sceneId);
-    storyStore.createPrompt(session.user_id, projectId, prompt.sceneId, {
-      text: prompt.prompt,
-      exclusions: [],
-      referenceRoles: scene ? {
-        characterIds: scene.characterIds,
-        locationId: scene.locationId || '',
-        styleId: '',
-      } : {},
-      textModel: structured.model,
-      temperature: 0.7,
-      maxTokens: 8192,
-      imageModel,
-      imageSize,
-      source: 'ai',
+async function handleGenerationSave(req, res, projectId) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  const { project } = generationProject(req, projectId, { requireStage: true });
+
+  const scenes = Array.isArray(project.scenes) ? project.scenes : [];
+  const incoming = Array.isArray(body.prompts) ? body.prompts : [];
+  // Action references map onto scenes one to one, so a saved prompt keeps the
+  // scene it was built for as its provenance.
+  const prompts = incoming.map((prompt, index) => {
+    const scene = scenes[index];
+    if (!scene || !scene.id || (prompt && prompt.sceneId)) return prompt;
+    return { ...prompt, sceneId: scene.id };
+  });
+
+  let task;
+  try {
+    task = generationStore.savePrompts(session.user_id, project.id, prompts);
+  } catch (err) {
+    fail(err.status || 500, err.message, err.code);
+  }
+  if (!task) fail(404, 'Project not found.');
+  return sendJSON(res, 200, { task, project: db.getProject(session.user_id, project.id) });
+}
+
+async function handleGenerationPromptUpdate(req, res, projectId, promptId) {
+  const { session, project } = generationProject(req, projectId);
+  const body = await readJSON(req);
+  let task;
+  try {
+    task = generationStore.updatePrompt(session.user_id, project.id, promptId, body.prompt);
+  } catch (err) {
+    fail(err.status || 500, err.message, err.code);
+  }
+  if (!task) fail(404, 'Image prompt not found.');
+  return sendJSON(res, 200, { task });
+}
+
+async function handleGenerationApproval(req, res, projectId, promptId) {
+  const { session, project } = generationProject(req, projectId);
+  const body = await readJSON(req);
+  const task = generationStore.setPromptApproval(session.user_id, project.id, promptId, body.approved === true);
+  if (!task) fail(404, 'Image prompt not found.');
+  return sendJSON(res, 200, { task });
+}
+
+async function handleGenerationReview(req, res) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  const { project } = generationProject(req, body.projectId, { requireStage: true });
+
+  const task = generationStore.getTask(session.user_id, project.id);
+  if (!task || !task.prompts.length) {
+    fail(409, 'Build and save the image prompts first.', 'PROMPTS_REQUIRED');
+  }
+  if (!task.state.approvals) {
+    fail(409, 'Approve every image prompt before reviewing the project.', 'APPROVALS_REQUIRED');
+  }
+
+  const user = db.getUserById(session.user_id);
+  if (!user) fail(401, 'Please sign in.');
+  const target = resolveChatTarget(user, 'reviewer');
+  const references = generationReferenceBundle(session.user_id, project);
+
+  const userContent = [
+    `Reference material:\n${references.referenceMaterial}`,
+    `Character references (JSON):\n${JSON.stringify(
+      references.characters.map((character) => ({
+        name: character.name,
+        gender: character.gender,
+        referenceMaterial: character.referenceMaterial,
+      })), null, 2)}`,
+    `Character reference sheets (JSON):\n${JSON.stringify(
+      references.characters.map((character) => ({
+        name: character.name,
+        sheetVersion: character.sheet ? character.sheet.version : null,
+      })), null, 2)}`,
+    `Action references (JSON):\n${JSON.stringify(references.actions, null, 2)}`,
+    `Location references (JSON):\n${JSON.stringify(references.locations, null, 2)}`,
+    `Image prompts to review (JSON, one per image, in order):\n${JSON.stringify(
+      task.prompts.map((prompt) => ({
+        promptId: prompt.id,
+        action: prompt.action,
+        location: prompt.locationName,
+        characters: prompt.characters,
+        prompt: prompt.prompt,
+      })), null, 2)}`,
+    'Compare every image prompt with the references. Return {"flags":[...]} as JSON only.',
+  ].join('\n\n');
+
+  const result = await callChatUpstream({
+    ...target,
+    system: [
+      GENERATION_REVIEW_SYSTEM_PROMPT,
+      ...(target.configuredContext ? [target.configuredContext] : []),
+    ].join('\n\n'),
+    messages: [{ role: 'user', content: userContent }],
+    temperature: 0.2,
+    maxTokens: 8000,
+    telemetry: { userId: session.user_id, projectId: project.id, operation: 'generation-review' },
+  });
+
+  const data = parseJsonPayload(result.content);
+  const list = data && Array.isArray(data.flags) ? data.flags : Array.isArray(data) ? data : null;
+  if (!list) {
+    fail(502, 'The reviewer returned an unreadable result. Try the review again.', 'INVALID_REVIEW_RESPONSE');
+  }
+
+  const known = new Set(task.prompts.map((prompt) => prompt.id));
+  const findings = [];
+  for (const raw of list) {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    const promptId = String(item.promptId || item.prompt_id || item.id || '').trim();
+    const message = String(item.message || item.issue || item.detail || '').trim();
+    if (!known.has(promptId) || !message) continue;
+    const severity = String(item.severity || item.level || '').toLowerCase();
+    findings.push({
+      promptId,
+      severity: ['error', 'warning', 'info'].includes(severity) ? severity : 'warning',
+      message: message.slice(0, 2000),
     });
   }
 
+  const updated = generationStore.setReviewFlags(session.user_id, project.id, findings, result.model);
   return sendJSON(res, 200, {
-    project: db.getProject(session.user_id, projectId),
-    prompts: updated.generationPrompts,
-    model: structured.model,
-    fallback: structured.fallback,
+    task: updated,
+    review: { model: result.model, flagCount: updated.state.openFlagCount },
   });
 }
 
-async function handleGenerationPrompt(req, res) {
+async function handleGenerationFlag(req, res, projectId, promptId, flagId) {
+  const { session, project } = generationProject(req, projectId);
+  const body = await readJSON(req);
+  let task;
+  try {
+    task = generationStore.resolveFlag(session.user_id, project.id, promptId, flagId, String(body.status || '').trim());
+  } catch (err) {
+    fail(err.status || 500, err.message, err.code);
+  }
+  if (!task) fail(404, 'Review flag not found.');
+  return sendJSON(res, 200, { task });
+}
+
+async function handleGenerationImageOne(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
 
-  if (!session.api_key_enc) {
-    fail(409, 'No DeepSeek API key is saved for your account. Add one in Settings.', 'NO_API_KEY');
+  if (!session.byteplus_api_key_enc) {
+    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
   }
-  const apiKey = security.decryptApiKey(session.api_key_enc);
+  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
   if (!apiKey) {
-    fail(500, 'Your saved API key could not be read. Please save it again.', 'KEY_UNREADABLE');
+    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
   }
 
-  const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
-  if (!projectId) fail(400, 'Choose a project in Generation Stage.');
+  const { project } = generationProject(req, body.projectId, { requireStage: true });
+  const promptId = typeof body.promptId === 'string' ? body.promptId.trim() : '';
+  if (!promptId) fail(400, 'Choose an image prompt to generate.');
 
-  const project = db.getProject(session.user_id, projectId);
-  if (!project) fail(404, 'Project not found.');
-
-  const reference = (project.referenceMaterial || '').trim();
-  if (!reference) {
-    fail(409, 'This project has no saved reference material. Generate it in Reference Stage first.', 'REFERENCE_REQUIRED');
+  const task = generationStore.getTask(session.user_id, project.id);
+  const prompt = task && task.prompts.find((item) => item.id === promptId);
+  if (!prompt) fail(404, 'Image prompt not found.');
+  if (!task.state.review) {
+    fail(
+      409,
+      'Approve every image prompt and finish the project review before generating images.',
+      'REVIEW_REQUIRED'
+    );
   }
+  if (!prompt.prompt.trim()) fail(400, 'This image prompt is empty.');
 
-  const rawScene = body.scene && typeof body.scene === 'object' ? body.scene : null;
-  const sceneId = rawScene && typeof rawScene.id === 'string' ? rawScene.id.trim() : '';
-  if (!sceneId) fail(400, 'Choose a scene to regenerate.');
-
-  const sceneIndex = project.scenes.findIndex((scene) => scene.id === sceneId);
-  if (sceneIndex < 0) fail(404, 'Scene not found.');
-
-  const scene = normalizeSceneList([{ ...rawScene, id: sceneId }], 1)[0];
-  scene.order = sceneIndex;
-  const scenes = project.scenes.slice();
-  scenes[sceneIndex] = scene;
-
-  const model = typeof body.model === 'string' && body.model.trim()
-    ? body.model.trim()
-    : (TEXT_MODELS.has(session.text_model) ? session.text_model : DEFAULT_TEXT_MODEL);
-  if (!TEXT_MODELS.has(model)) {
-    fail(400, 'Unsupported DeepSeek model. Choose DeepSeek 4 Pro.');
-  }
-  if (model.length > 100) fail(400, 'Model name is too long.');
-
-  const characterReferenceText = Array.isArray(project.characterReferences) && project.characterReferences.length
-    ? `Character references (JSON):\n${JSON.stringify(project.characterReferences, null, 2)}`
-    : null;
-  const storyContext = storyStore.getStory(session.user_id, projectId);
-  const structuredReferenceText = storyContext
-    ? `Structured continuity references (JSON):\n${JSON.stringify({
-      brief: storyContext.brief,
-      characters: storyContext.characters,
-      locations: storyContext.locations,
-      styles: storyContext.styles,
-    }, null, 2)}`
-    : null;
-
-  const userContent = [
-    `Reference material:\n${reference}`,
-    ...(characterReferenceText ? [characterReferenceText] : []),
-    ...(structuredReferenceText ? [structuredReferenceText] : []),
-    `Scene (JSON):\n${JSON.stringify(scene, null, 2)}`,
-    'Write one detailed photorealistic prompt for this scene. Return {"prompt":"..."} as JSON only.',
-  ].join('\n\n');
-
-  const structured = await callDeepSeekJson(apiKey, {
-    model,
-    messages: [
-      { role: 'system', content: SINGLE_SCENE_GENERATION_SYSTEM_PROMPT },
-      { role: 'user', content: userContent },
-    ],
-    temperature: 0.7,
-    max_tokens: 4000,
-    thinking: { type: 'disabled' },
-    response_format: { type: 'json_object' },
-  });
-
-  const prompt = singleScenePrompt(scenePromptResponseData(structured));
-  if (!prompt) {
-    fail(502, 'DeepSeek returned an invalid scene-prompt format. Expected one nonempty prompt. Your saved prompts were kept.', 'NO_PROMPTS');
-  }
-
-  const byScene = new Map(
-    project.generationPrompts
-      .filter((item) => item.sceneId !== sceneId)
-      .map((item) => [item.sceneId, item])
-  );
-  byScene.set(sceneId, { sceneId, prompt: prompt.slice(0, 30000) });
-
-  const generationPrompts = scenes
-    .map((item) => byScene.get(item.id))
-    .filter(Boolean);
-
-  const updated = db.updateProject(session.user_id, projectId, {
-    scenes,
-    generation_prompts: generationPrompts,
-  });
-  if (!updated) fail(404, 'Project not found.');
-
-  const story = storyStore.getStory(session.user_id, projectId) || { scenes: [] };
-  const storyScene = story.scenes.find((item) => item.id === sceneId);
   const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
-  storyStore.createPrompt(session.user_id, projectId, sceneId, {
-    text: prompt,
-    exclusions: [],
-    referenceRoles: storyScene ? {
-      characterIds: storyScene.characterIds,
-      locationId: storyScene.locationId || '',
-      styleId: '',
-    } : {},
-    textModel: structured.model,
-    temperature: 0.7,
-    maxTokens: 4000,
+  const allowedSizes = IMAGE_MODEL_SIZES.get(imageModel);
+  const defaultSize = allowedSizes.includes('2K') ? '2K' : allowedSizes[0];
+  const size = typeof body.size === 'string' && body.size.trim() ? body.size.trim() : defaultSize;
+  if (!allowedSizes.includes(size)) {
+    fail(400, `Invalid image size for this model. Choose ${allowedSizes.join(', ')}.`);
+  }
+
+  const references = generationReferenceBundle(session.user_id, project);
+  const referenceImages = generationReferenceImages(project, references, prompt);
+  if (!referenceImages.length) {
+    fail(
+      409,
+      'No character reference sheet is available for this image. Add final character reference sheets in the Story Workspace first.',
+      'REFERENCE_IMAGES_REQUIRED'
+    );
+  }
+
+  const image = await storeGeneratedImage({
+    session,
+    project,
+    apiKey,
     imageModel,
-    imageSize: (IMAGE_MODEL_SIZES.get(imageModel) || ['2K'])[0],
-    source: 'ai',
+    size,
+    prompt: prompt.prompt,
+    referenceImages,
+    sceneId: prompt.sceneId || prompt.id,
+    title: prompt.action || `Image ${prompt.index + 1}`,
   });
 
-  return sendJSON(res, 200, {
-    project: db.getProject(session.user_id, projectId),
-    prompt: prompt.slice(0, 30000),
-    model: structured.model,
-    fallback: structured.fallback,
+  const updated = generationStore.recordImage(session.user_id, project.id, promptId, {
+    file: image.file,
+    mime: image.mime,
+    size: image.size,
+    model: image.model,
+    prompt: prompt.prompt,
+    createdAt: image.createdAt,
+    assetId: image.assetId,
+    versionId: image.versionId,
+    revision: image.revision,
+    promptDraftId: image.promptDraftId,
+  });
+  if (!updated) fail(404, 'Image prompt not found.');
+
+  return sendJSON(res, 201, {
+    task: updated,
+    image,
+    project: db.getProject(session.user_id, project.id),
   });
 }
-
-async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceImage = null) {
+async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages = []) {
+  const images = (Array.isArray(referenceImages) ? referenceImages : [referenceImages])
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 10);
   let upstream;
   try {
     upstream = await requestTracker.fetch(BYTEPLUS_IMAGE_ENDPOINT, {
@@ -2583,7 +2845,7 @@ async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceIm
       body: JSON.stringify({
         model: imageModel,
         prompt,
-        ...(referenceImage ? { image: [referenceImage] } : {}),
+        ...(images.length ? { image: images } : {}),
         size,
         response_format: 'b64_json',
         output_format: 'png',
@@ -2673,6 +2935,72 @@ async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceIm
   return { buffer, mime, extension, size: typeof first.size === 'string' ? first.size : size };
 }
 
+/**
+ * Render one image and file it into the project and the asset Library.
+ * `referenceImages` are data URLs; when present they are sent to the image
+ * model as visual references so a scene image can reuse a canonical character
+ * reference sheet.
+ */
+async function storeGeneratedImage({
+  session,
+  project,
+  apiKey,
+  imageModel,
+  size,
+  prompt,
+  referenceImages = [],
+  sceneId,
+  title,
+  promptDraftId,
+}) {
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages);
+  const file = `${crypto.randomUUID()}.${generated.extension}`;
+  const directory = path.join(IMAGE_DIR, project.id);
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(directory, file), generated.buffer);
+  } catch (err) {
+    fail(500, `Could not save the generated image: ${err.message}`, 'IMAGEGEN_SAVE_FAILED');
+  }
+
+  const image = {
+    sceneId,
+    file,
+    mime: generated.mime,
+    size: generated.size,
+    prompt,
+    model: imageModel,
+    source: 'generated',
+    createdAt: new Date().toISOString(),
+  };
+
+  let recorded;
+  try {
+    recorded = assetStore.recordImage({
+      userId: session.user_id,
+      projectId: project.id,
+      sceneId,
+      relativePath: `${project.id}/${file}`,
+      source: 'generated',
+      model: imageModel,
+      prompt,
+      promptDraftId,
+      title,
+    });
+  } catch (err) {
+    fail(500, `Could not record the generated asset: ${err.message}`, 'ASSET_RECORD_FAILED');
+  }
+
+  return {
+    ...image,
+    assetId: recorded.assetId,
+    versionId: recorded.versionId,
+    revision: recorded.revision,
+    promptDraftId: recorded.promptDraftId || null,
+    url: `/api/image/${encodeURIComponent(project.id)}/${encodeURIComponent(file)}`,
+  };
+}
+
 async function handleGenerateImage(req, res) {
   const session = requireUser(req);
   const body = await readJSON(req);
@@ -2713,61 +3041,21 @@ async function handleGenerateImage(req, res) {
   const latestDraft = storyStore.latestDraft(session.user_id, projectId, sceneId);
   const promptDraftId = latestDraft && latestDraft.text === prompt ? latestDraft.id : null;
 
-  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt);
-  const buffer = generated.buffer;
-  const mime = generated.mime;
-  const extension = generated.extension;
-
-  const file = `${crypto.randomUUID()}.${extension}`;
-  const directory = path.join(IMAGE_DIR, projectId);
-  try {
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(directory, file), buffer);
-  } catch (err) {
-    fail(500, `Could not save the generated image: ${err.message}`, 'IMAGEGEN_SAVE_FAILED');
-  }
-
-  const image = {
-    sceneId,
-    file,
-    mime,
-    size: generated.size,
+  const image = await storeGeneratedImage({
+    session,
+    project,
+    apiKey,
+    imageModel,
+    size,
     prompt,
-    model: imageModel,
-    source: 'generated',
-    createdAt: new Date().toISOString(),
-  };
-
-  let recorded;
-  try {
-    recorded = assetStore.recordImage({
-      userId: session.user_id,
-      projectId,
-      sceneId,
-      relativePath: `${projectId}/${file}`,
-      source: 'generated',
-      model: imageModel,
-      prompt,
-      promptDraftId,
-    });
-  } catch (err) {
-    fail(500, `Could not record the generated asset: ${err.message}`, 'ASSET_RECORD_FAILED');
-  }
+    sceneId,
+    promptDraftId,
+  });
 
   const updated = db.getProject(session.user_id, projectId);
   if (!updated) fail(404, 'Project not found.');
 
-  return sendJSON(res, 200, {
-    image: {
-      ...image,
-      assetId: recorded.assetId,
-      versionId: recorded.versionId,
-      revision: recorded.revision,
-      promptDraftId: recorded.promptDraftId || null,
-      url: `/api/image/${encodeURIComponent(projectId)}/${encodeURIComponent(file)}`,
-    },
-    project: updated,
-  });
+  return sendJSON(res, 200, { image, project: updated });
 }
 
 async function handleUploadImage(req, res) {
@@ -3697,6 +3985,791 @@ function handleStorySheetPromote(req, res, sheetId) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Character maker
+//
+// Standalone characters owned by one user and attached to no project. Each
+// generation appends a version; promoting one is this user's own choice and
+// never marks anything reviewed or publication-ready.
+// ---------------------------------------------------------------------------
+const CHARACTER_IMAGE_SUBDIR = 'characters';
+
+function characterFail(err) {
+  if (err && err.status) fail(err.status, err.message, err.code);
+  fail(500, 'Could not update this character.');
+}
+
+function characterImageUrl(characterId, file) {
+  return `/api/characters/${encodeURIComponent(characterId)}/image/${encodeURIComponent(file)}`;
+}
+
+function withCharacterUrls(character) {
+  if (!character) return character;
+  return {
+    ...character,
+    versions: (character.versions || []).map((version) => ({
+      ...version,
+      url: characterImageUrl(character.id, version.file),
+    })),
+  };
+}
+
+function characterPayload(userId, projectId = '') {
+  return { characters: characterStore.list(userId, projectId).map(withCharacterUrls) };
+}
+
+// A project scope is optional: no projectId means the standalone Character
+// maker tab, and a projectId is only accepted when this user owns it.
+function characterProjectScope(session, projectId) {
+  const scoped = String(projectId === undefined || projectId === null ? '' : projectId).trim();
+  if (!scoped) return '';
+  if (!db.getProject(session.user_id, scoped)) fail(404, 'Project not found.');
+  return scoped;
+}
+
+function handleCharacterList(req, res) {
+  const session = requireUser(req);
+  const params = new URL(req.url, 'http://localhost').searchParams;
+  const projectId = characterProjectScope(session, params.get('projectId'));
+  return sendJSON(res, 200, characterPayload(session.user_id, projectId));
+}
+
+async function handleCharacterCreate(req, res) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  try {
+    const projectId = characterProjectScope(session, body && body.projectId);
+    const character = characterStore.create(session.user_id, { ...body, projectId });
+    return sendJSON(res, 201, { character: withCharacterUrls(character) });
+  } catch (err) {
+    characterFail(err);
+  }
+}
+
+async function handleCharacterUpdate(req, res, characterId) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  try {
+    const character = characterStore.update(session.user_id, characterId, body);
+    if (!character) fail(404, 'Character not found.');
+    return sendJSON(res, 200, { character: withCharacterUrls(character) });
+  } catch (err) {
+    characterFail(err);
+  }
+}
+
+function handleCharacterDelete(req, res, characterId) {
+  const session = requireUser(req);
+  const removed = characterStore.remove(session.user_id, characterId);
+  if (!removed) fail(404, 'Character not found.');
+  const directory = path.join(IMAGE_DIR, CHARACTER_IMAGE_SUBDIR, removed.id);
+  try {
+    fs.rmSync(directory, { recursive: true, force: true });
+  } catch (err) {
+    console.error(`  Could not remove character images for ${removed.id}: ${err.message}`);
+  }
+  // Answer with the list for the scope the deleted character belonged to, so
+  // the caller never receives the other tab's characters.
+  return sendJSON(res, 200, { removed: removed.id, ...characterPayload(session.user_id, removed.projectId) });
+}
+
+async function handleCharacterGenerate(req, res, characterId) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  const mode = body && body.mode === 'sheet' ? 'sheet' : body && body.mode === 'portrait' ? 'portrait' : '';
+  if (!mode) fail(400, 'Choose a portrait or a character sheet.');
+  const character = characterStore.get(session.user_id, characterId);
+  if (!character) fail(404, 'Character not found.');
+
+  if (!session.byteplus_api_key_enc) {
+    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
+  }
+  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
+  if (!apiKey) {
+    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
+  }
+
+  const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
+  const allowedSizes = IMAGE_MODEL_SIZES.get(imageModel);
+  const defaultSize = allowedSizes.includes('2K') ? '2K' : allowedSizes[0];
+  const size = typeof body.size === 'string' && body.size.trim() ? body.size.trim() : defaultSize;
+  if (!allowedSizes.includes(size)) {
+    fail(400, `Invalid image size for this model. Choose ${allowedSizes.join(', ')}.`);
+  }
+
+  const description = String(character.description || '').trim();
+  if (!description) {
+    fail(409, 'Describe this character before generating an image.', 'CHARACTER_DESCRIPTION_REQUIRED');
+  }
+
+  const referenceImages = [];
+  let prompt;
+  if (mode === 'sheet') {
+    prompt = buildCharacterSheetPrompt(character, description);
+    try {
+      referenceImages.push(
+        `data:image/png;base64,${fs.readFileSync(CHARACTER_SHEET_LAYOUT_REFERENCE_PATH).toString('base64')}`
+      );
+    } catch (err) {
+      fail(500, `Could not load the character sheet layout reference: ${err.message}`, 'IMAGEGEN_REFERENCE_MISSING');
+    }
+  } else {
+    prompt = buildCharacterPortraitPrompt(character, description);
+  }
+
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, referenceImages);
+
+  const file = `${crypto.randomUUID()}.${generated.extension}`;
+  const directory = path.join(IMAGE_DIR, CHARACTER_IMAGE_SUBDIR, character.id);
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(directory, file), generated.buffer);
+  } catch (err) {
+    fail(500, `Could not save the character image: ${err.message}`, 'IMAGEGEN_SAVE_FAILED');
+  }
+
+  let version;
+  try {
+    version = characterStore.addVersion(session.user_id, character.id, {
+      mode,
+      file,
+      mime: generated.mime,
+      size: generated.size,
+      prompt,
+      imageModel,
+      imageSize: size,
+    });
+  } catch (err) {
+    characterFail(err);
+  }
+  const updated = characterStore.get(session.user_id, character.id);
+  return sendJSON(res, 201, {
+    character: withCharacterUrls(updated),
+    version: { ...version, url: characterImageUrl(character.id, version.file) },
+  });
+}
+
+function handleCharacterVersionPromote(req, res, characterId, versionId) {
+  const session = requireUser(req);
+  const character = characterStore.promoteVersion(session.user_id, characterId, versionId);
+  if (!character) fail(404, 'Character or version not found.');
+  return sendJSON(res, 200, { character: withCharacterUrls(character) });
+}
+
+// Copy an existing version (usually a standalone Character maker final) into
+// another character as a new version, and mark it final. The bytes are copied,
+// so the two characters never share a file and deleting either is safe.
+async function handleCharacterVersionImport(req, res, characterId) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  const fromVersionId = String((body && body.fromVersionId) || '').trim();
+  if (!fromVersionId) fail(400, 'Choose a version to copy.');
+
+  const target = characterStore.get(session.user_id, characterId);
+  if (!target) fail(404, 'Character not found.');
+  const source = characterStore.versionForUser(session.user_id, fromVersionId);
+  if (!source) fail(404, 'Version not found.');
+
+  const sourcePath = path.join(IMAGE_DIR, CHARACTER_IMAGE_SUBDIR, source.characterId, source.file);
+  let data;
+  try {
+    data = await fs.promises.readFile(sourcePath);
+  } catch (_) {
+    fail(404, 'The stored image for that version could not be read.');
+  }
+
+  const extension = path.extname(source.file).replace('.', '') || 'png';
+  const file = `${crypto.randomUUID()}.${extension}`;
+  const directory = path.join(IMAGE_DIR, CHARACTER_IMAGE_SUBDIR, target.id);
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(directory, file), data);
+  } catch (err) {
+    fail(500, `Could not save the copied image: ${err.message}`, 'IMAGEGEN_SAVE_FAILED');
+  }
+
+  try {
+    const created = characterStore.addVersion(session.user_id, target.id, {
+      mode: source.mode,
+      file,
+      mime: source.mime,
+      size: source.size,
+      prompt: source.prompt,
+      imageModel: source.imageModel,
+      imageSize: source.imageSize,
+    });
+    characterStore.promoteVersion(session.user_id, target.id, created.id);
+  } catch (err) {
+    characterFail(err);
+  }
+
+  const updated = characterStore.get(session.user_id, target.id);
+  const copied = (updated.versions || []).find((item) => item.file === file);
+  return sendJSON(res, 201, {
+    character: withCharacterUrls(updated),
+    version: copied ? { ...copied, url: characterImageUrl(target.id, copied.file) } : null,
+  });
+}
+
+async function handleCharacterImage(req, res, characterId, file) {
+  const session = requireUser(req);
+  const version = characterStore.versionByFile(session.user_id, characterId, file);
+  if (!version) fail(404, 'Image not found.');
+
+  const fullPath = path.join(IMAGE_DIR, CHARACTER_IMAGE_SUBDIR, characterId, file);
+  let data;
+  try {
+    data = await fs.promises.readFile(fullPath);
+  } catch (_) {
+    fail(404, 'Image not found.');
+  }
+
+  res.writeHead(200, {
+    'Content-Type': version.mime || 'image/png',
+    'Content-Length': data.length,
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(data);
+}
+
+// ---------------------------------------------------------------------------
+// Standalone image generator
+//
+// Images belong to no project. Each generated image is also registered in the
+// Library as a project-less asset, so it gets the normal review checklist and
+// can be filed into a project later from the Library.
+// ---------------------------------------------------------------------------
+const GENERATION_IMAGE_SUBDIR = 'generations';
+const GENERATION_REFERENCE_SUBDIR = 'generations/references';
+const MAX_GENERATION_REFERENCES = 10;
+const MAX_REFERENCE_TOTAL_BYTES = 24 * 1024 * 1024;
+
+function generationFail(err) {
+  if (err && err.status) fail(err.status, err.message, err.code);
+  fail(500, 'Could not update this generation.');
+}
+
+function generationImageUrl(generationId, file) {
+  return `/api/generations/${encodeURIComponent(generationId)}/image/${encodeURIComponent(file)}`;
+}
+
+function withGenerationUrl(generation) {
+  if (!generation) return generation;
+  return { ...generation, url: generationImageUrl(generation.id, generation.file) };
+}
+
+function generationReferenceUrl(reference) {
+  return `/api/generation-references/${encodeURIComponent(reference.id)}/image`;
+}
+
+function withReferenceUrl(reference) {
+  return reference ? { ...reference, url: generationReferenceUrl(reference) } : reference;
+}
+
+function generationPayload(userId) {
+  return {
+    generations: standaloneStore.list(userId).map(withGenerationUrl),
+    presets: standaloneStore.listPresets(userId),
+    references: standaloneStore.listReferences(userId).map(withReferenceUrl),
+    limits: { maxReferences: MAX_GENERATION_REFERENCES },
+  };
+}
+
+// A Library asset title from the prompt's first line, so the Library entry is
+// recognisable without opening it.
+function generationTitle(prompt) {
+  const firstLine = String(prompt || '').split('\n')[0].trim();
+  return firstLine.length > 90 ? `${firstLine.slice(0, 90)}…` : firstLine;
+}
+
+// Turn the client's reference descriptors into the data URLs BytePlus accepts.
+// Ownership is re-checked for every source here, so a client can never name an
+// image it does not own.
+async function resolveGenerationReferences(session, input) {
+  const list = Array.isArray(input) ? input.slice(0, MAX_GENERATION_REFERENCES) : [];
+  const images = [];
+  const saved = [];
+  let total = 0;
+
+  for (const item of list) {
+    const kind = String((item && item.kind) || '');
+    let fullPath = '';
+    let mime = '';
+    let label = '';
+
+    if (kind === 'library') {
+      const relativePath = String((item && item.path) || '');
+      if (!relativePath) continue;
+      const resolved = await resolveLibraryFile(session.user_id, relativePath);
+      fullPath = resolved.fullPath;
+      mime = resolved.mime || 'image/png';
+      label = relativePath.split('/').pop();
+      saved.push({ kind, path: relativePath, name: label });
+    } else if (kind === 'character') {
+      const characterId = String((item && item.characterId) || '');
+      const file = String((item && item.file) || '');
+      const version = characterId && file
+        ? characterStore.versionByFile(session.user_id, characterId, file)
+        : null;
+      if (!version) fail(404, 'Character image not found.');
+      const character = characterStore.get(session.user_id, characterId);
+      fullPath = path.join(IMAGE_DIR, CHARACTER_IMAGE_SUBDIR, characterId, file);
+      mime = version.mime || 'image/png';
+      label = `${(character && character.name) || 'Character'} (${version.mode === 'sheet' ? 'sheet' : 'portrait'})`;
+      saved.push({ kind, characterId, file, name: label });
+    } else if (kind === 'upload') {
+      const reference = standaloneStore.referenceForUser(session.user_id, String((item && item.id) || ''));
+      if (!reference) fail(404, 'Reference image not found.');
+      fullPath = path.join(IMAGE_DIR, GENERATION_REFERENCE_SUBDIR, reference.id, reference.file);
+      mime = reference.mime || 'image/png';
+      label = reference.name || reference.file;
+      saved.push({ kind, id: reference.id, name: label });
+    } else {
+      continue;
+    }
+
+    let data;
+    try {
+      data = await fs.promises.readFile(fullPath);
+    } catch (_) {
+      fail(404, `Reference image could not be read: ${label || 'unknown'}.`);
+    }
+    total += data.length;
+    if (total > MAX_REFERENCE_TOTAL_BYTES) {
+      fail(400, 'Those reference images are too large together. Use fewer or smaller images.');
+    }
+    images.push(`data:${mime};base64,${data.toString('base64')}`);
+    if (saved.length && saved[saved.length - 1].name !== label) saved[saved.length - 1].name = label;
+  }
+
+  return { images, saved };
+}
+
+function handleGenerationList(req, res) {
+  const session = requireUser(req);
+  res.setHeader('Cache-Control', 'no-store');
+  return sendJSON(res, 200, generationPayload(session.user_id));
+}
+
+async function handleGenerationCreate(req, res) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+
+  if (!session.byteplus_api_key_enc) {
+    fail(409, 'No BytePlus API key is saved for your account. Add one in Settings.', 'NO_IMAGEGEN_KEY');
+  }
+  const apiKey = security.decryptApiKey(session.byteplus_api_key_enc);
+  if (!apiKey) {
+    fail(500, 'Your saved BytePlus API key could not be read. Please save it again.', 'IMAGEGEN_KEY_UNREADABLE');
+  }
+
+  const imageModel = IMAGE_MODEL_SIZES.has(session.image_model) ? session.image_model : DEFAULT_IMAGE_MODEL;
+  const allowedSizes = IMAGE_MODEL_SIZES.get(imageModel);
+  const defaultSize = allowedSizes.includes('2K') ? '2K' : allowedSizes[0];
+
+  const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+  const size = typeof body.size === 'string' && body.size.trim() ? body.size.trim() : defaultSize;
+  if (!prompt) fail(400, 'Enter a prompt first.');
+  if (prompt.length > 30000) fail(400, 'Image prompt is too long (max 30,000 characters).');
+  if (!allowedSizes.includes(size)) {
+    fail(400, `Invalid image size for this model. Choose ${allowedSizes.join(', ')}.`);
+  }
+
+  const { images, saved } = await resolveGenerationReferences(session, body.references);
+  const generated = await generateImageBuffer(apiKey, imageModel, size, prompt, images);
+
+  const generationId = crypto.randomUUID();
+  const file = `${crypto.randomUUID()}.${generated.extension}`;
+  const relativePath = `${GENERATION_IMAGE_SUBDIR}/${generationId}/${file}`;
+  const directory = path.join(IMAGE_DIR, GENERATION_IMAGE_SUBDIR, generationId);
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(directory, file), generated.buffer);
+  } catch (err) {
+    fail(500, `Could not save the generated image: ${err.message}`, 'IMAGEGEN_SAVE_FAILED');
+  }
+
+  // Register the image in the Library as a project-less asset.
+  let recorded = null;
+  try {
+    recorded = assetStore.recordImage({
+      userId: session.user_id,
+      projectId: null,
+      sceneId: null,
+      relativePath,
+      source: 'generated',
+      model: imageModel,
+      prompt,
+      title: generationTitle(prompt),
+    });
+  } catch (_) {
+    recorded = null;
+  }
+
+  let generation;
+  try {
+    generation = standaloneStore.create(session.user_id, {
+      id: generationId,
+      prompt,
+      imageModel,
+      imageSize: size,
+      file,
+      mime: generated.mime,
+      bytes: generated.buffer.length,
+      assetId: recorded ? recorded.assetId : '',
+      assetVersionId: recorded ? recorded.versionId : '',
+      references: saved,
+    });
+  } catch (err) {
+    generationFail(err);
+  }
+
+  return sendJSON(res, 201, {
+    generation: withGenerationUrl(generation),
+    libraryWarning: recorded
+      ? ''
+      : 'The image was generated, but it could not be added to the Library. It is still saved in this tab.',
+  });
+}
+
+function handleGenerationDelete(req, res, generationId) {
+  const session = requireUser(req);
+  const generation = standaloneStore.get(session.user_id, generationId);
+  if (!generation) fail(404, 'Generation not found.');
+
+  // Never destroy review work or a project's asset from here.
+  if (generation.assetId) {
+    const asset = assetStore.getAsset(session.user_id, generation.assetId);
+    if (asset && asset.metadata && asset.metadata.projectId) {
+      fail(409, 'This image has been filed into a project. Delete it from the Library instead.', 'ASSET_IN_PROJECT');
+    }
+    const review = reviewStore.getAssetReview(session.user_id, generation.assetId);
+    if (review && (review.review || review.publication)) {
+      fail(409, 'This image has been reviewed in the Library. Clear its review there before deleting it.', 'REVIEWED_ASSET');
+    }
+  }
+
+  const removed = standaloneStore.remove(session.user_id, generation.id);
+  try {
+    fs.rmSync(path.join(IMAGE_DIR, GENERATION_IMAGE_SUBDIR, generation.id), { recursive: true, force: true });
+  } catch (_) {
+    // The record is gone; a leftover file is harmless and stays out of the Library.
+  }
+  if (generation.assetId) {
+    try {
+      assetStore.removeAsset(session.user_id, generation.assetId);
+    } catch (_) {
+      // The generation is already removed; a stale Library row is not fatal.
+    }
+  }
+
+  return sendJSON(res, 200, { removed: removed.id, ...generationPayload(session.user_id) });
+}
+
+async function handleGenerationImage(req, res, generationId, file) {
+  const session = requireUser(req);
+  const generation = standaloneStore.get(session.user_id, generationId);
+  if (!generation || generation.file !== file) fail(404, 'Image not found.');
+
+  const fullPath = path.join(IMAGE_DIR, GENERATION_IMAGE_SUBDIR, generation.id, generation.file);
+  let data;
+  try {
+    data = await fs.promises.readFile(fullPath);
+  } catch (_) {
+    fail(404, 'Image not found.');
+  }
+
+  res.writeHead(200, {
+    'Content-Type': generation.mime || 'image/png',
+    'Content-Length': data.length,
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(data);
+}
+
+// Uploaded reference images live under a UUID folder, which the Library
+// filesystem scan skips, so they never become assets of their own.
+async function handleGenerationReferenceUpload(req, res) {
+  const session = requireUser(req);
+  const requestUrl = new URL(req.url, 'http://localhost');
+  const name = String(requestUrl.searchParams.get('name') || '').trim().slice(0, 200);
+
+  const buffer = await readBinary(req, MAX_UPLOAD_BYTES);
+  if (!buffer || !buffer.length) fail(400, 'The uploaded image is empty.');
+  const type = detectImageType(buffer);
+  if (!type) fail(400, 'Upload a PNG, JPEG, or WebP image.');
+
+  const referenceId = crypto.randomUUID();
+  const file = `${crypto.randomUUID()}.${type.extension}`;
+  const directory = path.join(IMAGE_DIR, GENERATION_REFERENCE_SUBDIR, referenceId);
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(directory, file), buffer);
+  } catch (err) {
+    fail(500, `Could not save the reference image: ${err.message}`, 'IMAGE_UPLOAD_SAVE_FAILED');
+  }
+
+  let reference;
+  try {
+    reference = standaloneStore.addReference(session.user_id, {
+      id: referenceId,
+      file,
+      mime: type.mime,
+      bytes: buffer.length,
+      name: name || `Reference ${new Date().toISOString().slice(0, 10)}`,
+    });
+  } catch (err) {
+    generationFail(err);
+  }
+  return sendJSON(res, 201, { reference: withReferenceUrl(reference) });
+}
+
+function handleGenerationReferenceImage(req, res, referenceId) {
+  const session = requireUser(req);
+  const reference = standaloneStore.referenceForUser(session.user_id, referenceId);
+  if (!reference) fail(404, 'Image not found.');
+
+  const fullPath = path.join(IMAGE_DIR, GENERATION_REFERENCE_SUBDIR, reference.id, reference.file);
+  let data;
+  try {
+    data = fs.readFileSync(fullPath);
+  } catch (_) {
+    fail(404, 'Image not found.');
+  }
+
+  res.writeHead(200, {
+    'Content-Type': reference.mime || 'image/png',
+    'Content-Length': data.length,
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(data);
+}
+
+function handleGenerationReferenceDelete(req, res, referenceId) {
+  const session = requireUser(req);
+  const removed = standaloneStore.removeReference(session.user_id, referenceId);
+  if (!removed) fail(404, 'Reference image not found.');
+  try {
+    fs.rmSync(path.join(IMAGE_DIR, GENERATION_REFERENCE_SUBDIR, removed.id), { recursive: true, force: true });
+  } catch (_) {
+    // Nothing else refers to this file once the row is gone.
+  }
+  return sendJSON(res, 200, { removed: removed.id, ...generationPayload(session.user_id) });
+}
+
+function handleGenerationPresetList(req, res) {
+  const session = requireUser(req);
+  return sendJSON(res, 200, { presets: standaloneStore.listPresets(session.user_id) });
+}
+
+async function handleGenerationPresetCreate(req, res) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  try {
+    const preset = standaloneStore.createPreset(session.user_id, body);
+    return sendJSON(res, 201, { preset });
+  } catch (err) {
+    generationFail(err);
+  }
+}
+
+async function handleGenerationPresetUpdate(req, res, presetId) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  try {
+    const preset = standaloneStore.updatePreset(session.user_id, presetId, body);
+    if (!preset) fail(404, 'Preset not found.');
+    return sendJSON(res, 200, { preset });
+  } catch (err) {
+    generationFail(err);
+  }
+}
+
+function handleGenerationPresetDelete(req, res, presetId) {
+  const session = requireUser(req);
+  const removed = standaloneStore.removePreset(session.user_id, presetId);
+  if (!removed) fail(404, 'Preset not found.');
+  return sendJSON(res, 200, { removed: removed.id, presets: standaloneStore.listPresets(session.user_id) });
+}
+
+// ---------------------------------------------------------------------------
+// Story Studio progress
+//
+// One overview for one story: what is finished, what is waiting for a human
+// decision, and what the next action is. The six steps mirror the Story Studio
+// navigation, and each status is derived from the data that screen edits — the
+// progress is never a separately stored flag that could drift from the work.
+// ---------------------------------------------------------------------------
+const STUDIO_STEP_LABELS = {
+  idea: 'Idea',
+  references: 'References',
+  cast: 'Characters & Locations',
+  scenes: 'Scenes',
+  generate: 'Generate',
+  review: 'Review',
+};
+
+const STUDIO_STEP_SCREENS = {
+  idea: 'studio-idea',
+  references: 'studio-references',
+  cast: 'studio-cast',
+  scenes: 'studio-scenes',
+  generate: 'studio-generate',
+  review: 'studio-review',
+};
+
+function studioStep(id, status, detail, action) {
+  return {
+    id,
+    label: STUDIO_STEP_LABELS[id],
+    screen: STUDIO_STEP_SCREENS[id],
+    status,          // 'done' | 'attention' (a decision is waiting) | 'todo'
+    detail,
+    action,
+  };
+}
+
+function handleStudioProgress(req, res, projectIdValue) {
+  const session = requireUser(req);
+  const projectId = storyProjectId(projectIdValue);
+  const project = db.getProject(session.user_id, projectId);
+  if (!project) fail(404, 'Project not found.', 'PROJECT_NOT_FOUND');
+
+  const story = storyStore.getStory(session.user_id, projectId) || {};
+  const brief = story.brief || {};
+  const characters = Array.isArray(story.characters) ? story.characters : [];
+  const locations = Array.isArray(story.locations) ? story.locations : [];
+  const styles = Array.isArray(story.styles) ? story.styles : [];
+  const scenes = Array.isArray(story.scenes) ? story.scenes : [];
+  const drafts = Array.isArray(story.prompts) ? story.prompts : [];
+  const warnings = Array.isArray(story.warnings) ? story.warnings : [];
+
+  const task = generationStore.getTask(session.user_id, projectId);
+  const taskState = task && task.state ? task.state : {};
+  const promptCount = taskState.promptCount || 0;
+  const approvedCount = taskState.approvedCount || 0;
+  const imageCount = taskState.imageCount || 0;
+  const openFlagCount = taskState.openFlagCount || 0;
+
+  const assets = reviewStore.enrichAssets(session.user_id, assetStore.listAssets(session.user_id, { projectId }));
+  // enrichAssets reports 'NOT REVIEWED' rather than null when there is no review
+  // record, so an unreviewed asset is one whose decision is that placeholder.
+  const hasReview = (asset) => Boolean(asset.reviewDecision) && asset.reviewDecision !== 'NOT REVIEWED';
+  const reviewedAssets = assets.filter(hasReview).length;
+  const approvedAssets = assets.filter((asset) => asset.reviewDecision === 'APPROVED').length;
+  const publishedAssets = assets.filter((asset) => asset.publicationDecision === true).length;
+
+  const steps = [];
+  const push = (id, status, detail, action) => steps.push(studioStep(id, status, detail, action));
+
+  // 1 · Idea — the idea and the brief the whole story grows from.
+  const hasIdea = Boolean(String(project.idea || '').trim() || String(project.description || '').trim());
+  const briefFilled = Boolean(String(brief.title || '').trim() && String(brief.premise || '').trim());
+  push(
+    'idea',
+    hasIdea || briefFilled ? 'done' : 'todo',
+    hasIdea || briefFilled
+      ? (briefFilled ? 'Idea and brief written' : 'Idea written, the brief is still empty')
+      : 'No idea written yet',
+    'Write the idea and the brief for this story'
+  );
+
+  // 2 · References — the shared material every image prompt is built from.
+  const hasMaterial = Boolean(String(project.referenceMaterial || '').trim());
+  const characterReferences = Array.isArray(project.characterReferences) ? project.characterReferences.length : 0;
+  push(
+    'references',
+    hasMaterial && characterReferences > 0 ? 'done' : 'todo',
+    `Reference material ${hasMaterial ? 'saved' : 'missing'} · ${characterReferences} character reference${characterReferences === 1 ? '' : 's'}`,
+    hasMaterial
+      ? 'Add the character references on the Reference screen'
+      : 'Generate the reference material on the Reference screen'
+  );
+
+  // 3 · Characters & Locations — the cast and the places, each approved by hand.
+  const unapprovedCast = characters.filter((item) => !item.approved).length
+    + locations.filter((item) => !item.approved).length
+    + styles.filter((item) => !item.approved).length;
+  push(
+    'cast',
+    unapprovedCast > 0 ? 'attention' : (characters.length && locations.length ? 'done' : 'todo'),
+    `${characters.length} character${characters.length === 1 ? '' : 's'} · ${locations.length} location${locations.length === 1 ? '' : 's'} · ${styles.length} style${styles.length === 1 ? '' : 's'}`
+      + (unapprovedCast ? ` · ${unapprovedCast} waiting for approval` : ''),
+    unapprovedCast
+      ? `Approve ${unapprovedCast} character, location, or style${unapprovedCast === 1 ? '' : 's'}`
+      : 'Add the characters, locations, and style references'
+  );
+
+  // 4 · Scenes — the scene outline, its links, and the prompt drafts.
+  const unlinkedScenes = scenes.filter((scene) => !scene.locationId || !(scene.characterIds || []).length).length;
+  const draftPrompts = drafts.filter((prompt) => prompt.status !== 'final').length;
+  push(
+    'scenes',
+    draftPrompts > 0 ? 'attention' : (scenes.length && !unlinkedScenes ? 'done' : 'todo'),
+    `${scenes.length} scene${scenes.length === 1 ? '' : 's'}`
+      + (unlinkedScenes ? ` · ${unlinkedScenes} without an approved location and cast` : '')
+      + (draftPrompts ? ` · ${draftPrompts} prompt draft${draftPrompts === 1 ? '' : 's'} not final` : '')
+      + (warnings.length ? ` · ${warnings.length} continuity warning${warnings.length === 1 ? '' : 's'}` : ''),
+    draftPrompts
+      ? `Promote ${draftPrompts} prompt draft${draftPrompts === 1 ? '' : 's'} to final`
+      : 'Write the scenes and link each one to an approved location and cast'
+  );
+
+  // 5 · Generate — the image prompts, then the images themselves.
+  const allApproved = promptCount > 0 && approvedCount >= promptCount;
+  push(
+    'generate',
+    promptCount > 0 && !allApproved ? 'attention' : (taskState.images ? 'done' : 'todo'),
+    promptCount === 0
+      ? 'No image prompts built yet'
+      : `${promptCount} prompt${promptCount === 1 ? '' : 's'} · ${approvedCount} approved · ${imageCount} image${imageCount === 1 ? '' : 's'} rendered`,
+    promptCount === 0
+      ? 'Build the image prompts'
+      : !allApproved
+        ? `Approve ${promptCount - approvedCount} image prompt${promptCount - approvedCount === 1 ? '' : 's'}`
+        : 'Run image generation for the remaining images'
+  );
+
+  // 6 · Review — the prompt review and the review state of this story's images.
+  const unreviewedAssets = assets.length - reviewedAssets;
+  const reviewAttention = openFlagCount + unreviewedAssets;
+  push(
+    'review',
+    reviewAttention > 0 ? 'attention' : (assets.length && reviewedAssets === assets.length && taskState.review ? 'done' : 'todo'),
+    assets.length === 0
+      ? (promptCount ? `${openFlagCount} open prompt flag${openFlagCount === 1 ? '' : 's'} · no images filed into this story yet` : 'Nothing to review yet')
+      : `${reviewedAssets} of ${assets.length} images reviewed · ${approvedAssets} approved · ${publishedAssets} publication ready`
+        + (openFlagCount ? ` · ${openFlagCount} open prompt flag${openFlagCount === 1 ? '' : 's'}` : ''),
+    openFlagCount
+      ? `Resolve ${openFlagCount} open prompt flag${openFlagCount === 1 ? '' : 's'}`
+      : unreviewedAssets
+        ? `Review ${unreviewedAssets} image${unreviewedAssets === 1 ? '' : 's'} in the Library`
+        : 'Review every image prompt and file its decision'
+  );
+
+  const counts = {
+    done: steps.filter((step) => step.status === 'done').length,
+    attention: steps.filter((step) => step.status === 'attention').length,
+    todo: steps.filter((step) => step.status === 'todo').length,
+    total: steps.length,
+  };
+  const nextStep = steps.find((step) => step.status !== 'done') || null;
+
+  return sendJSON(res, 200, {
+    project: { id: project.id, title: project.title, stage: project.stage, status: project.status },
+    steps,
+    counts,
+    // The next action is the first step that is not finished, in workflow order:
+    // a later step cannot be the next action while an earlier one is open.
+    next: nextStep
+      ? { stepId: nextStep.id, label: nextStep.label, screen: nextStep.screen, detail: nextStep.detail, action: nextStep.action }
+      : null,
+  });
+}
+
 function handleStoryValidate(req, res, projectId) {
   const session = requireUser(req);
   const warnings = storyStore.validate(session.user_id, storyProjectId(projectId));
@@ -4013,14 +5086,61 @@ async function handleApi(req, res, pathname) {
     return handleReference(req, res);
   }
 
-  if (pathname === '/api/generation/prompts') {
+  if (pathname === '/api/generation/build') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleGenerationPrompts(req, res);
+    return handleGenerationBuild(req, res);
   }
 
-  if (pathname === '/api/generation/prompt') {
+  if (pathname === '/api/generation/review') {
     if (method !== 'POST') fail(405, 'Method not allowed.');
-    return handleGenerationPrompt(req, res);
+    return handleGenerationReview(req, res);
+  }
+
+  if (pathname === '/api/generation/images/one') {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return handleGenerationImageOne(req, res);
+  }
+
+  const generationFlagMatch = pathname.match(
+    /^\/api\/generation\/([A-Za-z0-9_-]{1,64})\/prompts\/([A-Za-z0-9_-]{1,80})\/flags\/([A-Za-z0-9_-]{1,80})$/
+  );
+  if (generationFlagMatch) {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return handleGenerationFlag(req, res, generationFlagMatch[1], generationFlagMatch[2], generationFlagMatch[3]);
+  }
+
+  const generationApprovalMatch = pathname.match(
+    /^\/api\/generation\/([A-Za-z0-9_-]{1,64})\/prompts\/([A-Za-z0-9_-]{1,80})\/approval$/
+  );
+  if (generationApprovalMatch) {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return handleGenerationApproval(req, res, generationApprovalMatch[1], generationApprovalMatch[2]);
+  }
+
+  const generationPromptMatch = pathname.match(
+    /^\/api\/generation\/([A-Za-z0-9_-]{1,64})\/prompts\/([A-Za-z0-9_-]{1,80})$/
+  );
+  if (generationPromptMatch) {
+    if (method !== 'PUT') fail(405, 'Method not allowed.');
+    return handleGenerationPromptUpdate(req, res, generationPromptMatch[1], generationPromptMatch[2]);
+  }
+
+  const generationPromptsMatch = pathname.match(/^\/api\/generation\/([A-Za-z0-9_-]{1,64})\/prompts$/);
+  if (generationPromptsMatch) {
+    if (method !== 'PUT') fail(405, 'Method not allowed.');
+    return handleGenerationSave(req, res, generationPromptsMatch[1]);
+  }
+
+  const generationMatch = pathname.match(/^\/api\/generation\/([A-Za-z0-9_-]{1,64})$/);
+  if (generationMatch) {
+    if (method !== 'GET') fail(405, 'Method not allowed.');
+    return handleGenerationState(req, res, generationMatch[1]);
+  }
+
+  const studioProgressMatch = pathname.match(/^\/api\/studio\/([A-Za-z0-9_-]{1,64})\/progress$/);
+  if (studioProgressMatch) {
+    if (method !== 'GET') fail(405, 'Method not allowed.');
+    return handleStudioProgress(req, res, studioProgressMatch[1]);
   }
 
   if (pathname === '/api/images/generate') {
@@ -4110,6 +5230,91 @@ async function handleApi(req, res, pathname) {
   if (storyPromptPromoteMatch) {
     if (method !== 'POST') fail(405, 'Method not allowed.');
     return handleStoryPromptPromote(req, res, storyPromptPromoteMatch[1]);
+  }
+
+  if (pathname === '/api/characters') {
+    if (method === 'GET') return handleCharacterList(req, res);
+    if (method === 'POST') return handleCharacterCreate(req, res);
+    fail(405, 'Method not allowed.');
+  }
+
+  const characterImageMatch = pathname.match(/^\/api\/characters\/([A-Za-z0-9_-]{1,80})\/image\/([A-Za-z0-9-]+\.(?:png|jpe?g|webp))$/i);
+  if (characterImageMatch) {
+    if (method !== 'GET') fail(405, 'Method not allowed.');
+    return handleCharacterImage(req, res, characterImageMatch[1], characterImageMatch[2]);
+  }
+
+  if (pathname === '/api/generations') {
+    if (method === 'GET') return handleGenerationList(req, res);
+    if (method === 'POST') return handleGenerationCreate(req, res);
+    fail(405, 'Method not allowed.');
+  }
+
+  if (pathname === '/api/generation-references') {
+    if (method === 'POST') return handleGenerationReferenceUpload(req, res);
+    fail(405, 'Method not allowed.');
+  }
+
+  const generationReferenceImageMatch = pathname.match(/^\/api\/generation-references\/([A-Za-z0-9_-]{1,80})\/image$/);
+  if (generationReferenceImageMatch) {
+    if (method !== 'GET') fail(405, 'Method not allowed.');
+    return handleGenerationReferenceImage(req, res, generationReferenceImageMatch[1]);
+  }
+
+  const generationReferenceMatch = pathname.match(/^\/api\/generation-references\/([A-Za-z0-9_-]{1,80})$/);
+  if (generationReferenceMatch) {
+    if (method !== 'DELETE') fail(405, 'Method not allowed.');
+    return handleGenerationReferenceDelete(req, res, generationReferenceMatch[1]);
+  }
+
+  if (pathname === '/api/generation-presets') {
+    if (method === 'GET') return handleGenerationPresetList(req, res);
+    if (method === 'POST') return handleGenerationPresetCreate(req, res);
+    fail(405, 'Method not allowed.');
+  }
+
+  const generationPresetMatch = pathname.match(/^\/api\/generation-presets\/([A-Za-z0-9_-]{1,80})$/);
+  if (generationPresetMatch) {
+    if (method === 'PUT') return handleGenerationPresetUpdate(req, res, generationPresetMatch[1]);
+    if (method === 'DELETE') return handleGenerationPresetDelete(req, res, generationPresetMatch[1]);
+    fail(405, 'Method not allowed.');
+  }
+
+  const generationImageMatch = pathname.match(/^\/api\/generations\/([A-Za-z0-9_-]{1,80})\/image\/([^/]+)$/);
+  if (generationImageMatch) {
+    if (method !== 'GET') fail(405, 'Method not allowed.');
+    return handleGenerationImage(req, res, generationImageMatch[1], decodeURIComponent(generationImageMatch[2]));
+  }
+
+  const standaloneGenerationMatch = pathname.match(/^\/api\/generations\/([A-Za-z0-9_-]{1,80})$/);
+  if (standaloneGenerationMatch) {
+    if (method !== 'DELETE') fail(405, 'Method not allowed.');
+    return handleGenerationDelete(req, res, standaloneGenerationMatch[1]);
+  }
+
+  const characterVersionImportMatch = pathname.match(/^\/api\/characters\/([A-Za-z0-9_-]{1,80})\/versions\/import$/);
+  if (characterVersionImportMatch) {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return handleCharacterVersionImport(req, res, characterVersionImportMatch[1]);
+  }
+
+  const characterVersionPromoteMatch = pathname.match(/^\/api\/characters\/([A-Za-z0-9_-]{1,80})\/versions\/([A-Za-z0-9_-]{1,80})\/promote$/);
+  if (characterVersionPromoteMatch) {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return handleCharacterVersionPromote(req, res, characterVersionPromoteMatch[1], characterVersionPromoteMatch[2]);
+  }
+
+  const characterGenerateMatch = pathname.match(/^\/api\/characters\/([A-Za-z0-9_-]{1,80})\/generate$/);
+  if (characterGenerateMatch) {
+    if (method !== 'POST') fail(405, 'Method not allowed.');
+    return handleCharacterGenerate(req, res, characterGenerateMatch[1]);
+  }
+
+  const characterMatch = pathname.match(/^\/api\/characters\/([A-Za-z0-9_-]{1,80})$/);
+  if (characterMatch) {
+    if (method === 'PUT') return handleCharacterUpdate(req, res, characterMatch[1]);
+    if (method === 'DELETE') return handleCharacterDelete(req, res, characterMatch[1]);
+    fail(405, 'Method not allowed.');
   }
 
   const storySheetPromoteMatch = pathname.match(/^\/api\/story\/sheets\/([A-Za-z0-9_-]{1,80})\/promote$/);

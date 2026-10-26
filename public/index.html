@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Carnival — Idea Generator &amp; Project Manager</title>
+  <title>Carnival — Story Studio &amp; Generate Images</title>
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-24.30" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-25.8" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -63,33 +63,7 @@
         </div>
       </div>
       <div class="header-right">
-        <nav class="tabs" role="tablist">
-          <button class="tab active" id="tab-ideas" role="tab" aria-selected="true" data-tab="ideas">
-            <span class="tab-icon">💡</span> Idea Generator
-          </button>
-          <button class="tab" id="tab-projects" role="tab" aria-selected="false" data-tab="projects">
-            <span class="tab-icon">🗂️</span> Project Management
-            <span class="badge" id="project-count-badge">0</span>
-          </button>
-          <button class="tab" id="tab-reference" role="tab" aria-selected="false" data-tab="reference">
-            <span class="tab-icon">📚</span> Reference Stage
-          </button>
-          <button class="tab" id="tab-story" role="tab" aria-selected="false" data-tab="story">
-            <span class="tab-icon">📖</span> Story Workspace
-          </button>
-          <button class="tab" id="tab-generation" role="tab" aria-selected="false" data-tab="generation">
-            <span class="tab-icon">🎬</span> Generation Stage
-          </button>
-          <button class="tab" id="tab-library" role="tab" aria-selected="false" data-tab="library">
-            <span class="tab-icon">🖼️</span> Library
-          </button>
-          <button class="tab" id="tab-apis" role="tab" aria-selected="false" data-tab="apis">
-            <span class="tab-icon">🔑</span> Settings
-          </button>
-          <button class="tab" id="tab-docs" role="tab" aria-selected="false" data-tab="docs">
-            <span class="tab-icon">📖</span> Docs
-          </button>
-        </nav>
+        <nav class="header-shared" id="header-shared" aria-label="Shared services"></nav>
         <div class="user-box">
           <span class="user-name" id="user-name">@user</span>
           <a class="btn btn-ghost btn-sm" href="/track/" target="_blank" rel="noopener">Track ↗</a>
@@ -103,19 +77,21 @@
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-section sidebar-checklist">
           <div class="sidebar-head">
-            <h2 class="sidebar-title">Workflow</h2>
+            <h2 class="sidebar-title">AI Requests</h2>
+            <a class="track-link" href="/track/" target="_blank" rel="noopener">Track ↗</a>
           </div>
           <label class="field">
             <span class="field-label">Project</span>
             <select id="sidebar-project"></select>
           </label>
           <button class="btn btn-primary btn-sm sidebar-next-step" id="sidebar-next-step" type="button">→ Next step</button>
-          <ul class="checklist" id="workflow-checklist"></ul>
+          <p class="track-empty hidden" id="sidebar-track-empty">No AI requests yet.<br />Generations from this account will appear here.</p>
+          <ul class="track-list" id="sidebar-track"></ul>
         </div>
 
         <div class="sidebar-section sidebar-chat">
           <div class="sidebar-head">
-            <h2 class="sidebar-title">DeepSeek Chat</h2>
+            <h2 class="sidebar-title">CarniChat</h2>
             <div class="chat-mode-toggle" role="tablist">
               <button class="chat-mode active" data-chat-mode="guide" type="button" role="tab" aria-selected="true">Guide</button>
               <button class="chat-mode" data-chat-mode="reviewer" type="button" role="tab" aria-selected="false">Reviewer</button>
@@ -123,9 +99,9 @@
           </div>
           <div class="chat-pane" id="guide-chat-pane">
             <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
-            <div class="chat-typing hidden" id="chat-typing">DeepSeek is typing…</div>
+            <div class="chat-typing hidden" id="chat-typing">CarniChat is typing…</div>
             <form class="chat-input-row" id="chat-form" autocomplete="off">
-              <input type="text" id="chat-input" maxlength="4000" placeholder="Ask DeepSeek…" aria-label="Chat message" />
+              <input type="text" id="chat-input" maxlength="4000" placeholder="Ask CarniChat…" aria-label="Chat message" />
               <button class="btn btn-primary btn-sm" id="chat-send" type="submit">Send</button>
             </form>
             <p class="hint chat-hint" id="chat-hint">Chat persists while this page stays open.</p>
@@ -168,6 +144,27 @@
           </div>
         </div>
       </aside>
+
+      <div class="workspace">
+    <!-- Generate in the header opens the modules and their workflow controls. -->
+    <nav class="module-bar hidden" id="module-bar" aria-label="Carnival modules">
+      <div class="module-list" id="module-list"></div>
+    </nav>
+
+    <!-- Navigation for the active module, with that module's context. -->
+    <div class="module-nav-wrap hidden" id="module-nav-wrap">
+      <nav class="module-nav" id="module-nav" aria-label="Module screens"></nav>
+      <div class="module-context hidden" id="module-context">
+        <label class="field inline">
+          <span class="field-label">Current story</span>
+          <select id="studio-story"></select>
+        </label>
+        <span class="module-progress" id="studio-progress">No story selected</span>
+        <button class="btn btn-primary btn-sm hidden" id="studio-next-action" type="button">→ Next step</button>
+      </div>
+      <div class="module-subnav hidden" id="module-subnav"></div>
+      <div class="module-progress-detail hidden" id="studio-progress-detail"></div>
+    </div>
 
     <main>
       <!-- ============================================================ -->
@@ -301,16 +298,16 @@
             <div class="card">
               <h2 class="card-title">Reference project</h2>
               <label class="field">
-                <span class="field-label">Project in Reference Stage</span>
+                <span class="field-label">Story</span>
                 <select id="ref-project"></select>
               </label>
-              <p class="hint" id="ref-project-hint">Choose a project to load its idea as context.</p>
-              <button class="btn btn-ghost btn-sm" id="ref-open-story" type="button">📖 Open Story workspace</button>
+              <p class="hint" id="ref-project-hint">Choose a story to load its idea as context.</p>
+              <button class="btn btn-ghost btn-sm" id="ref-open-story" type="button">📖 Open in Story Studio</button>
               <label class="field">
                 <span class="field-label">Context (from the project idea)</span>
                 <textarea id="ref-context" rows="7" maxlength="20000" placeholder="The selected project's idea appears here. You can refine it before generating."></textarea>
               </label>
-              <button class="btn btn-secondary btn-sm hidden" id="ref-open-projects" type="button">Open Project Management</button>
+              <button class="btn btn-secondary btn-sm hidden" id="ref-open-projects" type="button">Open Projects</button>
             </div>
 
             <div class="card">
@@ -373,17 +370,246 @@
       </section>
 
       <!-- ============================================================ -->
-      <!-- STORY WORKSPACE TAB                                           -->
+      <!-- CHARACTER MAKER TAB                                           -->
       <!-- ============================================================ -->
-      <section class="panel" id="panel-story" role="tabpanel">
+      <section class="panel" id="panel-characters" role="tabpanel">
         <div class="card story-head">
           <div>
-            <h2 class="card-title">Story Workspace</h2>
-            <p class="hint">Turn Reference Stage material into character sheets, action references, and location references.</p>
+            <h2 class="card-title">Character Maker</h2>
+            <p class="hint">Build standalone characters and generate their reference images. These characters are not tied to a
+              story: describe one, generate a portrait or a three-view character sheet, then mark the version you want to keep
+              as final and reuse it anywhere.</p>
+          </div>
+        </div>
+
+        <div class="error-state hidden" id="characters-error">
+          <p id="characters-error-text">Could not load characters.</p>
+          <button class="btn btn-secondary btn-sm" id="characters-retry" type="button">Retry</button>
+        </div>
+
+        <div class="maker-layout">
+          <div class="card">
+            <div class="results-head">
+              <h2 class="card-title">Characters <span class="hint" id="characters-count"></span></h2>
+              <button class="btn btn-primary btn-sm" id="character-new" type="button">＋ New character</button>
+            </div>
+            <div id="character-list"></div>
+          </div>
+
+          <div class="card">
+            <div class="results-head">
+              <h2 class="card-title" id="character-editor-title">Character</h2>
+              <button class="btn btn-danger btn-sm hidden" id="character-delete" type="button">Delete character</button>
+            </div>
+            <p class="hint" id="character-empty">Choose a character or create a new one.</p>
+            <div class="hidden" id="character-fields">
+              <label class="field">
+                <span class="field-label">Name</span>
+                <input type="text" id="character-name" maxlength="120" placeholder="e.g. Ava Reyes" />
+              </label>
+              <label class="field">
+                <span class="field-label">Description</span>
+                <textarea id="character-description" rows="6" maxlength="6000"
+                  placeholder="Age, build, height, hair, eyes, skin, wardrobe, and distinguishing details. This text drives every image for this character."></textarea>
+              </label>
+              <div class="gen-prompt-controls">
+                <label class="field inline">
+                  <span class="field-label">Image type</span>
+                  <select id="character-mode">
+                    <option value="portrait">Portrait</option>
+                    <option value="sheet">Character sheet (3 views)</option>
+                  </select>
+                </label>
+                <label class="field inline">
+                  <span class="field-label">Image size</span>
+                  <select id="character-size"></select>
+                </label>
+                <button class="btn btn-secondary btn-sm" id="character-save" type="button">💾 Save</button>
+                <button class="btn btn-primary btn-sm" id="character-generate" type="button">✨ Generate image</button>
+              </div>
+              <p class="hint" id="character-hint"></p>
+              <div id="character-versions"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- PROJECT CHARACTERS TAB                                        -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-project-characters" role="tabpanel">
+        <div class="card story-head">
+          <div>
+            <h2 class="card-title">Character images</h2>
+            <p class="hint">Build the cast for the current story. Each character here belongs to that story and generates its own
+              portraits and three-view character sheets, so a story's characters stay together. You can also copy a final image
+              from the Character Maker.</p>
+          </div>
+        </div>
+
+        <div class="error-state hidden" id="project-characters-error">
+          <p id="project-characters-error-text">Could not load project characters.</p>
+          <button class="btn btn-secondary btn-sm" id="project-characters-retry" type="button">Retry</button>
+        </div>
+
+        <div class="maker-layout">
+          <div class="card">
+            <label class="field">
+              <span class="field-label">Project</span>
+              <select id="project-characters-project"></select>
+            </label>
+            <div class="results-head">
+              <h2 class="card-title">Characters <span class="hint" id="project-characters-count"></span></h2>
+              <button class="btn btn-primary btn-sm" id="project-character-new" type="button">＋ New character</button>
+            </div>
+            <div id="project-character-list"></div>
+          </div>
+
+          <div class="card">
+            <div class="results-head">
+              <h2 class="card-title" id="project-character-editor-title">Character</h2>
+              <button class="btn btn-danger btn-sm hidden" id="project-character-delete" type="button">Delete character</button>
+            </div>
+            <p class="hint" id="project-character-empty">Choose a project and a character, or create a new one.</p>
+            <div class="hidden" id="project-character-fields">
+              <label class="field">
+                <span class="field-label">Name</span>
+                <input type="text" id="project-character-name" maxlength="120" placeholder="e.g. Ava Reyes" />
+              </label>
+              <label class="field">
+                <span class="field-label">Description</span>
+                <textarea id="project-character-description" rows="6" maxlength="6000"
+                  placeholder="Age, build, height, hair, eyes, skin, wardrobe, and distinguishing details. This text drives every image for this character."></textarea>
+              </label>
+              <div class="gen-prompt-controls">
+                <label class="field inline">
+                  <span class="field-label">Image type</span>
+                  <select id="project-character-mode">
+                    <option value="portrait">Portrait</option>
+                    <option value="sheet">Character sheet (3 views)</option>
+                  </select>
+                </label>
+                <label class="field inline">
+                  <span class="field-label">Image size</span>
+                  <select id="project-character-size"></select>
+                </label>
+                <button class="btn btn-secondary btn-sm" id="project-character-save" type="button">💾 Save</button>
+                <button class="btn btn-primary btn-sm" id="project-character-generate" type="button">✨ Generate image</button>
+              </div>
+              <div class="gen-prompt-controls">
+                <label class="field inline">
+                  <span class="field-label">Reuse from Character maker</span>
+                  <select id="project-character-reuse"></select>
+                </label>
+                <button class="btn btn-secondary btn-sm" id="project-character-import" type="button">⤵ Copy final image</button>
+              </div>
+              <p class="hint" id="project-character-hint"></p>
+              <div id="project-character-versions"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- STANDALONE IMAGE GENERATOR TAB                                -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-standalone-images" role="tabpanel">
+        <div class="card story-head">
+          <div>
+            <h2 class="card-title">Standalone image generator</h2>
+            <p class="hint">Generate images from a prompt without a project. Every image is saved here
+              <em>and</em> added to the Library as an unassigned asset, so you can review it, tag it, or file it into a project later.</p>
+          </div>
+        </div>
+
+        <div class="error-state hidden" id="generator-error">
+          <p id="generator-error-text">Could not load the generator.</p>
+          <button class="btn btn-secondary btn-sm" id="generator-retry" type="button">Retry</button>
+        </div>
+
+        <div class="maker-layout">
+          <div class="card">
+            <label class="field">
+              <span class="field-label">Prompt</span>
+              <textarea id="generator-prompt" rows="9"
+                placeholder="Describe the image: subject, setting, lighting, lens, mood, and style."></textarea>
+            </label>
+            <div class="gen-prompt-controls">
+              <label class="field inline">
+                <span class="field-label">Image size</span>
+                <select id="generator-size"></select>
+              </label>
+              <label class="field inline">
+                <span class="field-label">Images</span>
+                <select id="generator-count">
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                </select>
+              </label>
+              <button class="btn btn-primary btn-sm" id="generator-generate" type="button">✨ Generate</button>
+            </div>
+            <p class="hint" id="generator-hint"></p>
+
+            <h3 class="settings-subtitle">Prompt presets</h3>
+            <div class="gen-prompt-controls">
+              <label class="field inline">
+                <span class="field-label">Saved presets</span>
+                <select id="generator-preset"></select>
+              </label>
+              <button class="btn btn-secondary btn-sm" id="generator-preset-insert" type="button">Insert</button>
+              <button class="btn btn-secondary btn-sm" id="generator-preset-save" type="button">Save current</button>
+              <button class="btn btn-secondary btn-sm" id="generator-preset-delete" type="button">Delete</button>
+            </div>
+
+            <h3 class="settings-subtitle">Reference images <span class="hint" id="generator-reference-count"></span></h3>
+            <p class="hint">Up to 10 references guide the result. They are attached as visual references, not copied.</p>
+            <div class="gen-prompt-controls">
+              <label class="field inline">
+                <span class="field-label">From the Library</span>
+                <select id="generator-reference-library"></select>
+              </label>
+              <button class="btn btn-secondary btn-sm" id="generator-reference-add-library" type="button">＋ Add</button>
+            </div>
+            <div class="gen-prompt-controls">
+              <label class="field inline">
+                <span class="field-label">From Character maker</span>
+                <select id="generator-reference-character"></select>
+              </label>
+              <button class="btn btn-secondary btn-sm" id="generator-reference-add-character" type="button">＋ Add</button>
+            </div>
+            <div class="gen-prompt-controls">
+              <label class="field inline">
+                <span class="field-label">Upload</span>
+                <input type="file" id="generator-reference-file" accept="image/png,image/jpeg,image/webp" />
+              </label>
+              <button class="btn btn-secondary btn-sm" id="generator-reference-upload" type="button">⬆ Upload</button>
+            </div>
+            <div id="generator-reference-chips"></div>
+          </div>
+
+          <div class="card">
+            <div class="results-head">
+              <h2 class="card-title">Generated images <span class="hint" id="generator-gallery-count"></span></h2>
+            </div>
+            <div id="generator-gallery"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- STORY WORKSPACE TAB                                           -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-story" role="tabpanel" data-story-panel="1">
+        <div class="card story-head">
+          <div>
+            <h2 class="card-title" id="story-head-title">Story</h2>
+            <p class="hint" id="story-head-hint">The current story: its idea, its cast and places, and its scenes.</p>
           </div>
           <div class="story-head-controls">
             <label class="field inline">
-              <span class="field-label">Project</span>
+              <span class="field-label">Story</span>
               <select id="story-project"></select>
             </label>
             <button class="btn btn-primary btn-sm" id="story-generate-worksheet" type="button">Generate worksheet</button>
@@ -404,7 +630,7 @@
         </div>
 
         <div class="hidden" id="story-worksheet">
-          <div class="card">
+          <div class="card" data-story-step="cast">
             <h2 class="card-title">Reference worksheet <span id="story-reference-status" class="hint"></span></h2>
             <div id="story-source-references"></div>
             <div class="results-head">
@@ -414,7 +640,7 @@
             </div>
             <div id="worksheet-sheets"></div>
           </div>
-          <div class="card">
+          <div class="card" data-story-step="scenes">
             <h2 class="card-title">Action Reference Generator <span id="worksheet-action-status" class="hint"></span></h2>
             <div class="results-head">
               <label class="field inline"><span class="field-label">Number of pictures</span><input type="number" id="worksheet-picture-count" min="1" max="20" value="6" /></label>
@@ -423,7 +649,7 @@
             </div>
             <div id="worksheet-actions"></div>
           </div>
-          <div class="card">
+          <div class="card" data-story-step="scenes">
             <h2 class="card-title">Location Reference Generator <span id="worksheet-location-status" class="hint"></span></h2>
             <div class="results-head">
               <button class="btn btn-secondary btn-sm" id="worksheet-generate-locations" type="button">Generate location references</button>
@@ -433,7 +659,7 @@
           </div>
         </div>
         <div class="hidden" id="story-content">
-          <div class="card story-brief-card">
+          <div class="card story-brief-card" data-story-step="idea">
             <div class="results-head">
               <h2 class="card-title">Story brief</h2>
             <button class="btn btn-primary btn-sm" id="story-save-brief" type="button">Save brief</button>
@@ -450,16 +676,30 @@
             <p class="hint" id="story-brief-hint">The brief is the canonical root of the story.</p>
           </div>
 
+          <div class="card" id="studio-idea-card" data-story-step="idea">
+            <div class="results-head">
+              <h2 class="card-title">Story idea</h2>
+              <button class="btn btn-primary btn-sm" id="studio-idea-save" type="button">Save idea</button>
+            </div>
+            <div class="story-form-grid">
+              <label class="field"><span class="field-label">Title</span><input id="studio-idea-title" maxlength="200" /></label>
+              <label class="field"><span class="field-label">Stage</span><input id="studio-idea-stage" readonly /></label>
+              <label class="field story-span"><span class="field-label">Idea</span><textarea id="studio-idea-text" rows="3" maxlength="4000"></textarea></label>
+              <label class="field story-span"><span class="field-label">Description</span><textarea id="studio-idea-description" rows="3" maxlength="4000"></textarea></label>
+            </div>
+            <p class="hint" id="studio-idea-hint">The idea is what the story grew from; the brief above is its canonical root. Both belong to this story only.</p>
+          </div>
+
           <div class="grid-two story-references">
             <div class="col">
-              <div class="card">
+              <div class="card" data-story-step="cast">
                 <div class="results-head">
                   <h2 class="card-title">Character bibles</h2>
                   <button class="btn btn-secondary btn-sm" id="story-add-character" type="button">＋ Character</button>
                 </div>
                 <div id="story-characters"></div>
               </div>
-              <div class="card">
+              <div class="card" data-story-step="cast">
                 <div class="results-head">
                   <h2 class="card-title">Locations</h2>
                   <button class="btn btn-secondary btn-sm" id="story-add-location" type="button">＋ Location</button>
@@ -468,14 +708,14 @@
               </div>
             </div>
             <div class="col">
-              <div class="card">
+              <div class="card" data-story-step="cast">
                 <div class="results-head">
                   <h2 class="card-title">Style references</h2>
                   <button class="btn btn-secondary btn-sm" id="story-add-style" type="button">＋ Style</button>
                 </div>
                 <div id="story-styles"></div>
               </div>
-              <div class="card">
+              <div class="card" data-story-step="scenes">
                 <div class="results-head">
                   <h2 class="card-title">Scene matrix</h2>
                   <div class="results-actions">
@@ -489,7 +729,7 @@
             </div>
           </div>
 
-          <div class="card story-prompts-card">
+          <div class="card story-prompts-card" data-story-step="cast">
             <div class="results-head">
               <h2 class="card-title">Character sheets</h2>
               <label class="field inline">
@@ -502,7 +742,7 @@
             <p class="hint" id="story-sheet-hint">Generate a photorealistic character reference image. Each generation creates a new version; promote one to final.</p>
           </div>
 
-          <div class="card story-warnings-card">
+          <div class="card story-warnings-card" data-story-step="scenes">
             <div class="results-head">
               <h2 class="card-title">Continuity warnings</h2>
               <span class="hint" id="story-warning-count">Not checked</span>
@@ -516,73 +756,120 @@
       <!-- GENERATION STAGE TAB                                          -->
       <!-- ============================================================ -->
       <section class="panel" id="panel-generation" role="tabpanel">
-        <div class="grid-two">
-          <div class="col">
-            <div class="card">
-              <h2 class="card-title">Generation project</h2>
-              <label class="field">
-                <span class="field-label">Project in Generation Stage</span>
-                <select id="gen-project"></select>
-              </label>
-              <p class="hint" id="gen-project-hint">Choose a project to load its idea, reference material, and scene outline.</p>
-              <button class="btn btn-ghost btn-sm" id="gen-open-story" type="button">📖 Open Story workspace</button>
-              <button class="btn btn-secondary btn-sm hidden" id="gen-open-projects" type="button">Open Project Management</button>
-              <label class="field">
-                <span class="field-label">Idea</span>
-                <textarea id="gen-idea" rows="3" readonly></textarea>
-              </label>
-              <label class="field">
-                <span class="field-label">Reference Material</span>
-                <textarea id="gen-reference" rows="7" readonly></textarea>
-              </label>
-            </div>
+        <div class="card story-head">
+          <div>
+            <h2 class="card-title">Generate</h2>
+            <p class="hint">Build one image prompt per action reference from the shared references, approve every prompt, then render every image one by one. Prompt review has its own step.</p>
+          </div>
+          <div class="story-head-controls">
+            <label class="field inline">
+              <span class="field-label">Story</span>
+              <select id="gen-project"></select>
+            </label>
+            <button class="btn btn-ghost btn-sm" id="gen-open-story" type="button">📖 Open in Story Studio</button>
+            <button class="btn btn-secondary btn-sm hidden" id="gen-open-projects" type="button">Open Projects</button>
+          </div>
+        </div>
 
-            <div class="card">
-              <div class="results-head">
-                <h2 class="card-title">Scene Outline</h2>
-                <div class="results-actions">
-                  <button class="btn btn-secondary btn-sm" id="gen-add-scene" type="button">＋ Add scene</button>
-                  <button class="btn btn-secondary btn-sm" id="gen-save-scenes" type="button">💾 Save outline</button>
-                </div>
-              </div>
-              <div id="gen-scenes"></div>
-              <p class="hint" id="gen-scene-hint">Scenes are editable. Save the outline before leaving the page.</p>
+        <div class="library-state hidden" id="gen-loading" role="status" aria-live="polite">
+          <span class="spinner-ring"></span>
+          <p>Loading the Generation Stage…</p>
+        </div>
+        <div class="empty-state hidden" id="gen-empty">
+          <span class="empty-icon">🎬</span>
+          <p>No project is loaded. Add reference material, then move a project to Generation Stage.</p>
+        </div>
+
+        <div class="hidden" id="gen-content">
+          <div class="card">
+            <div class="results-head">
+              <h2 class="card-title">1 · References</h2>
+              <span class="hint" id="gen-reference-status"></span>
             </div>
+            <p class="hint">The character references and the character reference sheets are shared by every image, which is what keeps the characters consistent.</p>
+            <div class="gen-reference-grid" id="gen-reference-grid"></div>
+            <div id="gen-reference-blockers"></div>
+            <div class="results-actions">
+              <button class="btn btn-primary" id="gen-build" type="button">✨ Build Image Prompts</button>
+            </div>
+            <p class="hint" id="gen-build-hint">The build writes one image prompt per action reference.</p>
           </div>
 
-          <div class="col">
-            <div class="card results-card">
-              <div class="results-head">
-                <h2 class="card-title">Scene Prompts</h2>
-              </div>
-              <div class="gen-prompt-controls">
-                <label class="field inline">
-                  <span class="field-label">DeepSeek model</span>
-                  <input type="text" id="gen-model" list="model-list" value="deepseek-v4-pro" maxlength="100" spellcheck="false" />
-                </label>
-                <label class="field inline">
-                  <span class="field-label">Image size · <span id="gen-image-model-label">Seedream 5.0 Pro</span></span>
-                  <select id="gen-image-size">
-                    <option value="1K">1K</option>
-                    <option value="1.5K">1.5K</option>
-                    <option value="2K" selected>2K</option>
-                  </select>
-                </label>
-                <button class="btn btn-primary" id="gen-generate-prompts" type="button">✨ Generate Scene Prompts</button>
-                <button class="btn btn-secondary" id="gen-generate-next-image" type="button">🖼 Generate next image</button>
-              </div>
-              <p class="hint" id="gen-prompt-hint">Generate one photorealistic prompt per scene.</p>
-              <div id="gen-prompts"></div>
+          <div class="card hidden" id="gen-prompts-card">
+            <div class="results-head">
+              <h2 class="card-title">2 · Image prompts</h2>
+              <span class="hint" id="gen-prompts-status"></span>
             </div>
-
-            <div class="card">
-              <div class="results-head">
-                <h2 class="card-title">Character sheets</h2>
-              </div>
-              <div id="gen-character-sheets"></div>
-              <p class="hint">Character sheets from Story Workspace appear here automatically.</p>
+            <div class="gen-prompt-controls">
+              <label class="field inline">
+                <span class="field-label">DeepSeek model</span>
+                <input type="text" id="gen-model" list="model-list" value="deepseek-v4-pro" maxlength="100" spellcheck="false" />
+              </label>
+              <button class="btn btn-primary" id="gen-save-prompts" type="button">💾 Save image prompts</button>
+              <button class="btn btn-secondary" id="gen-generate-again" type="button">↻ Generate again</button>
             </div>
+            <p class="hint" id="gen-prompt-hint"></p>
+            <div id="gen-prompts"></div>
           </div>
+
+          <div class="card hidden" id="gen-images-card">
+            <div class="results-head">
+              <h2 class="card-title">3 · Image generation</h2>
+              <span class="hint" id="gen-images-status"></span>
+            </div>
+            <div class="gen-prompt-controls">
+              <label class="field inline">
+                <span class="field-label">Image size · <span id="gen-image-model-label">Seedream 5.0 Pro</span></span>
+                <select id="gen-image-size"></select>
+              </label>
+              <button class="btn btn-primary" id="gen-run-images" type="button">🖼 Run image generation process</button>
+            </div>
+            <p class="hint">Every image is generated one by one with its character reference sheets attached and used. Finished images are filed into this project and the Library.</p>
+            <p class="hint" id="gen-images-hint"></p>
+            <div id="gen-image-progress"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- STORY STUDIO · REVIEW STEP                                    -->
+      <!-- ============================================================ -->
+      <section class="panel" id="panel-studio-review" role="tabpanel">
+        <div class="card story-head">
+          <div>
+            <h2 class="card-title">Review</h2>
+            <p class="hint">Everything for this story that still needs a human decision: the image prompts, and the images filed into the Library.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="results-head">
+            <h2 class="card-title">What needs approval</h2>
+            <span class="hint" id="studio-review-summary-status"></span>
+          </div>
+          <div id="studio-review-summary"></div>
+        </div>
+
+        <div class="card hidden" id="gen-review-card">
+          <div class="results-head">
+            <h2 class="card-title">Review the image prompts</h2>
+            <span class="hint" id="gen-review-status"></span>
+          </div>
+          <p class="hint">The reviewer compares every image prompt with the character references, the character reference sheets, the action references, and the location references. Every flag it raises must be edited away or dismissed.</p>
+          <div class="results-actions">
+            <button class="btn btn-primary" id="gen-review" type="button">🔎 Review the prompts</button>
+          </div>
+          <p class="hint" id="gen-review-hint"></p>
+          <div id="gen-flags"></div>
+        </div>
+
+        <div class="card">
+          <div class="results-head">
+            <h2 class="card-title">This story's images</h2>
+            <span class="hint" id="studio-review-images-status"></span>
+          </div>
+          <p class="hint">Images filed into this story, with their Library review decision. Content review, checklists, and publication stay separate decisions made in the Library.</p>
+          <div id="studio-review-images"></div>
         </div>
       </section>
 
@@ -854,34 +1141,63 @@
           <h2 class="card-title">Documentation</h2>
           <p class="hint">A complete guide to generating ideas, building a story, producing images, reviewing, and publishing with Carnival.</p>
           <nav class="docs-toc" aria-label="On this page">
+            <a href="#docs-modules">Modules</a>
             <a href="#docs-overview">Overview</a>
             <a href="#docs-start">Getting started</a>
             <a href="#docs-workflow">The workflow</a>
-            <a href="#docs-ideas">Idea Generator</a>
-            <a href="#docs-projects">Project Management</a>
-            <a href="#docs-reference">Reference Stage</a>
-            <a href="#docs-story">Story Workspace</a>
-            <a href="#docs-generation">Generation Stage</a>
+            <a href="#docs-ideas">Ideas</a>
+            <a href="#docs-projects">Projects</a>
+            <a href="#docs-reference">References</a>
+            <a href="#docs-story">Characters, Locations &amp; Scenes</a>
+            <a href="#docs-generation">Generate</a>
             <a href="#docs-review">Review &amp; Library</a>
-            <a href="#docs-sidebar">Sidebar &amp; bots</a>
+            <a href="#docs-sidebar">CarniChat &amp; bots</a>
             <a href="#docs-settings">Settings</a>
             <a href="#docs-approval">AI safety &amp; approval</a>
             <a href="#docs-faq">FAQ &amp; troubleshooting</a>
           </nav>
         </div>
 
+        <div class="card" id="docs-modules">
+          <h2 class="card-title">Modules</h2>
+          <p><strong>Carnival is the umbrella.</strong> Everything lives in a module, and each module owns its screens, its navigation, its wording, and its assistant guidance. Opening a different module changes the navigation bar underneath the header.</p>
+          <ol class="docs-list">
+            <li><strong>Story Studio</strong> — one story at a time, through the whole workflow:
+              <ol class="docs-list">
+                <li><strong>Projects</strong> — every story you are working on.</li>
+                <li><strong>Idea</strong> — the idea and the brief of the current story.</li>
+                <li><strong>References</strong> — the shared reference material every image prompt is built from.</li>
+                <li><strong>Characters &amp; Locations</strong> — the cast, the places, the look, and the character sheets.</li>
+                <li><strong>Scenes</strong> — the scene outline, the action references, and continuity.</li>
+                <li><strong>Generate</strong> — one image prompt per action reference, then the images.</li>
+                <li><strong>Review</strong> — everything still waiting for a human decision.</li>
+              </ol>
+            </li>
+            <li><strong>Generate Images</strong> — character art with or without a story:
+              <ol class="docs-list">
+                <li><strong>Character Maker</strong> — reusable characters saved for every story.</li>
+                <li><strong>Standalone Images</strong> — prompt to image, with no project.</li>
+              </ol>
+            </li>
+            <li><strong>Shared services</strong> — <strong>Ideas</strong>, the <strong>Library</strong>, <strong>Settings</strong>, and these <strong>Docs</strong> serve every module from the header at the top. Accounts, provider keys, usage tracking, and settings are shared.</li>
+          </ol>
+          <p class="hint">Click <strong>📚 Generate</strong> in the header to open Story Studio and Generate Images, with their workflow controls. Shared services hide those controls; Generate returns to your last module screen and selected story.</p>
+          <p class="hint">The <strong>Current story</strong> selector in the Story Studio bar is one choice that drives every story screen, so the Idea, References, Characters, Scenes, Generate, and Review screens always show the same story. The Library opens filtered to that story; in Generate Images it opens on the unassigned images instead.</p>
+          <p class="hint">Next to the selector, the progress pill summarises the story: how many of the six steps are done, how many are waiting for a decision, and what the next action is. Click it for the full overview — each step lists what is finished, what needs approval, and what to do next, and clicking a step opens it. A step shows an <strong>!</strong> only when a person has to decide something, never for work that simply has not been done yet.</p>
+        </div>
+
         <div class="card" id="docs-overview">
           <h2 class="card-title">Overview</h2>
           <p>Carnival turns a rough idea into a production-ready, photorealistic story. It uses DeepSeek for text generation, an image model (Seedream 5.0 Pro) for scene images, and your own API keys — which are encrypted at rest on the server and never sent back to the browser.</p>
-          <p>The app is organized into tabs that follow a natural pipeline:</p>
+          <p>Inside <strong>Story Studio</strong> the pipeline reads in this order:</p>
           <ol class="docs-list">
-            <li><strong>Idea Generator</strong> — brainstorm concepts from a context.</li>
-            <li><strong>Project Management</strong> — organize ideas into projects and move them through stages.</li>
-            <li><strong>Reference Stage</strong> — generate detailed reference material, scene outline, and character references.</li>
-            <li><strong>Story Workspace</strong> — build character reference sheets, action references, and location references from Reference Stage material.</li>
-            <li><strong>Generation Stage</strong> — write image prompts and generate scene images.</li>
-            <li><strong>Library</strong> — browse, review, and publish the images you produced.</li>
-            <li><strong>Settings</strong> — manage API keys, models, the Guide chat, and the Reviewer bot.</li>
+            <li><strong>Idea Generator</strong> (a shared service) — brainstorm concepts from a context.</li>
+            <li><strong>Projects</strong> — organize ideas into stories and move them through stages.</li>
+            <li><strong>References</strong> — generate detailed reference material, scene outline, and character references.</li>
+            <li><strong>Characters &amp; Locations</strong> — build character reference sheets, action references, and location references from the reference material.</li>
+            <li><strong>Generate</strong> — write image prompts and generate scene images.</li>
+            <li><strong>Review</strong> and the <strong>Library</strong> — review and publish the images you produced.</li>
+            <li><strong>Settings</strong> (a shared service) — manage API keys, models, the Guide chat, and the Reviewer bot.</li>
           </ol>
         </div>
 
@@ -908,7 +1224,7 @@
             <li><strong>Generation Stage</strong>: generate prompts and images per scene.</li>
             <li><strong>Done</strong>: mark a project complete when it is finished; completed projects stay in the Library.</li>
           </ul>
-          <p>The left sidebar's <strong>Workflow checklist</strong> shows, for the selected project, which steps are already finished.</p>
+          <p>The left sidebar's <strong>AI Requests</strong> track lists this account's most recent AI generations and shows when each one completes (green ✓). Open <strong>Track</strong> for full request details.</p>
         </div>
 
         <div class="card" id="docs-ideas">
@@ -925,7 +1241,7 @@
         </div>
 
         <div class="card" id="docs-projects">
-          <h2 class="card-title">Project Management</h2>
+          <h2 class="card-title">Projects</h2>
           <p>Projects are grouped by stage. Each project card lets you:</p>
           <ul class="docs-list">
             <li><strong>✎ Edit</strong> — change the title, idea, description, stage, status, priority, or reference material.</li>
@@ -938,7 +1254,7 @@
         </div>
 
         <div class="card" id="docs-reference">
-          <h2 class="card-title">Reference Stage</h2>
+          <h2 class="card-title">References</h2>
           <ol class="docs-list">
             <li>Choose a <strong>Reference Stage</strong> project.</li>
             <li>Add between <strong>1 and 4 characters</strong> (name + gender) and an optional <strong>setting</strong>.</li>
@@ -952,9 +1268,57 @@
           <p>You can edit the reference text and click <strong>💾 Save reference</strong>, or <strong>↻ Regenerate</strong> to try again.</p>
         </div>
 
+        <div class="card" id="docs-characters">
+          <h2 class="card-title">Character Maker</h2>
+          <p>This screen (Generate Images ▸ Character Maker) builds <strong>standalone characters</strong>: they belong to your account and to no story, so you can design a character once and reuse it anywhere.</p>
+          <ol class="docs-list">
+            <li>Click <strong>＋ New character</strong>, then name it and describe it. The description drives every image: age, build, height, hair, eyes, skin, wardrobe, and distinguishing details.</li>
+            <li>Choose the <strong>image type</strong>: <strong>Portrait</strong> (one head-to-mid-thigh image) or <strong>Character sheet (3 views)</strong> (the shared front / three-quarter / side layout template).</li>
+            <li>Pick an <strong>image size</strong> and click <strong>✨ Generate image</strong>. The processing widget in the bottom-right corner shows the running generation.</li>
+          </ol>
+          <p>Every generation adds a <strong>version</strong>. Click <strong>Make final</strong> on the version you want to keep — only one version per character can be final — and <strong>Copy prompt</strong> to reuse the exact wording elsewhere.</p>
+          <div class="docs-callout docs-callout-note">
+            <strong>Not a review.</strong> "Final" only marks which image is this character's current reference. It does not approve content or make anything publication-ready; the Library review checklist still applies to every asset.
+          </div>
+          <p class="hint">Deleting a character removes its generated images from disk. Image generation needs a saved BytePlus API key in Settings.</p>
+        </div>
+
+        <div class="card" id="docs-generator">
+          <h2 class="card-title">Standalone image generator</h2>
+          <p>Generate images from a prompt <strong>without a project</strong>. Use it for one-off art, tests, covers, or anything you want to try before it belongs to a project.</p>
+          <ol class="docs-list">
+            <li>Write a <strong>prompt</strong>: subject, setting, lighting, lens, mood, style.</li>
+            <li>Pick an <strong>image size</strong> and how many <strong>images</strong> to generate (1–4).</li>
+            <li>Click <strong>✨ Generate</strong>. The processing widget in the bottom-right corner shows the progress of each image.</li>
+          </ol>
+          <h3>Reference images</h3>
+          <p>Attach up to <strong>10</strong> references so the result follows a particular character, place, or look. Add one from the <strong>Library</strong>, from a final <strong>Character maker</strong> image, or <strong>upload</strong> a file. References are attached to the request as visual guidance; they are never copied or modified.</p>
+          <h3>Prompt presets</h3>
+          <p>Save the current prompt as a named preset, then <strong>Insert</strong> it into the prompt box later. Presets belong to your account.</p>
+          <div class="docs-callout docs-callout-note">
+            <strong>Every image is also a Library asset.</strong> Generated images are registered in the Library as <em>unassigned</em> assets, so the normal review checklist, tags, collections, and publication decision all apply. Use <strong>🔎 Library</strong> on any image to open it there.
+          </div>
+          <p class="hint">Deleting an image here removes it from the Library too — except images you have already reviewed or that belong to a project, which are protected so review work is never lost by accident.</p>
+        </div>
+
+        <div class="card" id="docs-project-characters">
+          <h2 class="card-title">Character images</h2>
+          <p>This screen (Story Studio ▸ Characters &amp; Locations ▸ Character images) builds the cast for <strong>one story</strong>. Pick the story at the top, then every character you create here is saved with that story.</p>
+          <ol class="docs-list">
+            <li>Choose a <strong>project</strong>. Completed projects are not listed.</li>
+            <li>Click <strong>＋ New character</strong>, then name it and describe it.</li>
+            <li>Choose <strong>Portrait</strong> or <strong>Character sheet (3 views)</strong>, pick an image size, and click <strong>✨ Generate image</strong>.</li>
+          </ol>
+          <p><strong>Reuse from Character maker</strong> copies the final image of a standalone character into the selected project character. The image is copied, not linked, so later changing or deleting the standalone character never affects the project. The copy becomes the project character's new final version.</p>
+          <div class="docs-callout docs-callout-note">
+            <strong>Two separate lists.</strong> Characters made here belong to their project and never appear in the Character maker tab; standalone characters never appear here. Deleting a project also deletes its project characters.
+          </div>
+          <p class="hint">Character images are stored with your data and served only to you. They are not added to the Library as assets; copy one there yourself if you want it reviewed, tagged, or published.</p>
+        </div>
+
         <div class="card" id="docs-story">
-          <h2 class="card-title">Story Workspace</h2>
-          <p>Choose a project and click <strong>Generate worksheet</strong> to view its name, idea, characters, setting, Reference Material, and Character References.</p>
+          <h2 class="card-title">Characters, Locations &amp; Scenes</h2>
+          <p>These are three Story Studio steps — <strong>Idea</strong>, <strong>Characters &amp; Locations</strong>, and <strong>Scenes</strong> — that share one screen, so the workflow bar shows only the cards for the step you are on. Choose a story and click <strong>Generate worksheet</strong> to view its name, idea, characters, setting, Reference Material, and Character References.</p>
           <h3>Character reference sheets</h3>
           <p>Generate one selected character sheet or all sheets using only the individual Character Reference and the shared layout template. Preview each version; click <strong>Add this sheet</strong> when satisfied, or generate again. Add a sheet for every character to complete the reference task.</p>
           <h3>Action references</h3>
@@ -964,14 +1328,15 @@
         </div>
 
         <div class="card" id="docs-generation">
-          <h2 class="card-title">Generation Stage</h2>
+          <h2 class="card-title">Generation</h2>
           <ol class="docs-list">
-            <li>Choose a <strong>Generation Stage</strong> project (it must already have reference material).</li>
-            <li>Review the scene list, then click <strong>Generate prompts</strong> to write one photorealistic image prompt per scene.</li>
-            <li>Edit or <strong>Regenerate</strong> individual prompts as needed.</li>
-            <li>Choose an image size and click <strong>Generate image</strong> for each scene.</li>
+            <li>Choose a <strong>Generation Stage</strong> project. The References card shows the character references, the character reference sheets, the action references, and the location references, and names anything missing.</li>
+            <li>Click <strong>Build Image Prompts</strong> to write one image prompt per action reference with DeepSeek. The character references and character reference sheets are the same for every image, which keeps the characters consistent.</li>
+            <li><strong>Save</strong> the prompts or <strong>Generate again</strong>. Once saved, approve each prompt individually.</li>
+            <li>Click <strong>Review the prompts</strong>. The reviewer compares every image prompt with the references and flags inconsistencies; each flag must be edited away or dismissed.</li>
+            <li>Choose an image size and click <strong>Run image generation process</strong>. Every image is rendered one by one with its character reference sheets attached and filed into the project and the Library.</li>
           </ol>
-          <p>You can also <strong>upload</strong> your own PNG/JPEG/WebP image for a scene. Generated and uploaded images are stored in the Library.</p>
+          <p>Editing a saved prompt clears its approval and makes its existing image out of date. Approval is always a separate human action.</p>
         </div>
 
         <div class="card" id="docs-review">
@@ -988,11 +1353,13 @@
         </div>
 
         <div class="card" id="docs-sidebar">
-          <h2 class="card-title">Sidebar, Guide &amp; Reviewer</h2>
-          <h3>Workflow checklist</h3>
-          <p>The Guide view shows a fixed checklist (Idea → Reference → Story brief → Characters → Locations → Style → Scenes → Prompts → Images → Completed) for the selected project.</p>
+          <h2 class="card-title">CarniChat, Guide &amp; Reviewer</h2>
+          <h3>AI Requests track</h3>
+          <p>The sidebar lists the most recent AI generations for your account and marks each one <strong>Complete</strong> when it finishes. Use the project selector and <strong>→ Next step</strong> to advance a project, and open <strong>Track ↗</strong> to inspect prompts, replies, and errors.</p>
+          <h3>CarniChat</h3>
+          <p><strong>CarniChat</strong> is the assistant area in the bottom-left corner. It has two modes, and its opening line follows the module you are in — Story Studio asks how to move the current story forward, Generate Images asks about a character or an image.</p>
           <h3>Guide</h3>
-          <p><strong>Guide</strong> is a persistent chat that walks you through the workflow and suggests the next concrete action.</p>
+          <p><strong>Guide</strong> is a persistent chat that walks you through the workflow and suggests the next concrete action. It also receives the module you are working in, so its answers stay about that module.</p>
           <h3>Reviewer</h3>
           <p><strong>Reviewer</strong> is a field-by-field review bot. Choose a project and a section (for example <em>Scene Prompts</em>), then click <strong>Review</strong>. It checks every field in that section against the project context.</p>
           <ul class="docs-list">
@@ -1048,6 +1415,7 @@
         </div>
       </section>
     </main>
+      </div>
     </div>
 
     <div class="process-widget hidden" id="process-widget" aria-live="polite">
@@ -1264,6 +1632,6 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="app.js?v=2026-10-24.34"></script>
+  <script src="app.js?v=2026-10-25.8"></script>
 </body>
 </html>

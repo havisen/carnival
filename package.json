@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/phase1.test.js && node test/phase2-assets.test.js && node test/phase2-migration.test.js && node test/phase4-review.test.js && node test/library.test.js && node test/library-ui.test.js && node test/phase5-story-workspace.test.js && node test/reviewer-bot.test.js && node test/reference-guide.test.js && node test/apiusage.test.js && node test/generation-prompts.test.js && node test/track.test.js",
+    "test": "node test/phase1.test.js && node test/phase2-assets.test.js && node test/phase2-migration.test.js && node test/phase4-review.test.js && node test/library.test.js && node test/library-ui.test.js && node test/phase5-story-workspace.test.js && node test/reviewer-bot.test.js && node test/reference-guide.test.js && node test/apiusage.test.js && node test/generation-stage.test.js && node test/track.test.js && node test/character-maker.test.js && node test/standalone-images.test.js && node test/studio-modules.test.js",
     "backup": "node scripts/backup-assets.js",
     "verify-assets": "node scripts/verify-assets.js"
   },

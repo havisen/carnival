@@ -724,6 +724,7 @@ function recordImage({
   prompt,
   promptDraftId,
   derivedFromVersionId,
+  title,
 }) {
   const normalized = normalizeRelative(relativePath);
   if (!normalized) throw new Error('Invalid asset path.');
@@ -743,12 +744,13 @@ function recordImage({
     }
     if (!asset) {
       const sceneTitle = project && sceneId ? projectTitleForScene(project, sceneId) : '';
+      const givenTitle = typeof title === 'string' ? title.trim().slice(0, 200) : '';
       asset = {
         id: insertAsset({
           userId,
           projectId: projectId || null,
           sceneId: sceneId || null,
-          title: sceneTitle || (project ? project.title : humanize(path.posix.basename(normalized))),
+          title: givenTitle || sceneTitle || (project ? project.title : humanize(path.posix.basename(normalized))),
           lifecycleStatus: 'ACTIVE',
         }),
       };
@@ -815,6 +817,30 @@ function archiveProject(userId, projectId) {
     UPDATE assets SET lifecycle_status = 'ARCHIVED', updated_at = ?
     WHERE user_id = ? AND project_id = ?
   `).run(new Date().toISOString(), userId, projectId);
+}
+
+// Delete an asset row and the rows that belong to it. Review records and
+// publication decisions are deliberately left untouched, so callers must refuse
+// to delete an asset that has been reviewed (see the standalone image gallery).
+// Returns the relative paths that were registered, or null when not found.
+function removeAsset(userId, assetId) {
+  const id = typeof assetId === 'string' ? assetId.trim() : '';
+  const asset = id ? assetById(id) : null;
+  if (!asset || asset.user_id !== userId) return null;
+  const relativePaths = versionsFor(asset.id).map((version) => version.relative_path);
+
+  rawDb.exec('BEGIN');
+  try {
+    rawDb.prepare('DELETE FROM asset_tags WHERE asset_id = ?').run(asset.id);
+    rawDb.prepare('DELETE FROM collection_assets WHERE asset_id = ?').run(asset.id);
+    rawDb.prepare('DELETE FROM asset_versions WHERE asset_id = ?').run(asset.id);
+    rawDb.prepare('DELETE FROM assets WHERE id = ?').run(asset.id);
+    rawDb.exec('COMMIT');
+  } catch (error) {
+    rawDb.exec('ROLLBACK');
+    throw error;
+  }
+  return { id: asset.id, relativePaths };
 }
 
 function canReadPath(userId, relativePath) {
@@ -1005,6 +1031,7 @@ function init(database, directory, databasePath) {
     listDuplicateGroups,
     listLibraryImages,
     getAsset,
+    removeAsset,
     listEpisodes,
     createEpisode,
     updateEpisode,
