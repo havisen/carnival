@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Carnival — Story Studio &amp; Generate Images</title>
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-25.8" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-26.1" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -62,9 +62,13 @@
           <p>Ideas by DeepSeek · Managed projects in one place</p>
         </div>
       </div>
+      <div class="header-mobile-actions">
+        <button class="btn btn-ghost btn-sm" id="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="false">Assistant</button>
+        <button class="btn btn-ghost btn-sm" id="account-toggle" type="button" aria-controls="account-actions" aria-expanded="false">Account</button>
+      </div>
       <div class="header-right">
         <nav class="header-shared" id="header-shared" aria-label="Shared services"></nav>
-        <div class="user-box">
+        <div class="user-box" id="account-actions">
           <span class="user-name" id="user-name">@user</span>
           <a class="btn btn-ghost btn-sm" href="/track/" target="_blank" rel="noopener">Track ↗</a>
           <button class="btn btn-ghost btn-sm" id="logout-btn" type="button">Sign out</button>
@@ -73,8 +77,13 @@
     </header>
 
     <div class="app-body">
+      <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="Close assistant" tabindex="-1"></button>
       <!-- Sidebar: workflow checklist (top) + DeepSeek chat (bottom) -->
       <aside class="sidebar" id="sidebar">
+        <div class="sidebar-mobile-head">
+          <strong>Assistant &amp; AI requests</strong>
+          <button class="btn btn-ghost btn-sm" id="sidebar-close" type="button">Close</button>
+        </div>
         <div class="sidebar-section sidebar-checklist">
           <div class="sidebar-head">
             <h2 class="sidebar-title">AI Requests</h2>
@@ -517,8 +526,7 @@
         <div class="card story-head">
           <div>
             <h2 class="card-title">Standalone image generator</h2>
-            <p class="hint">Generate images from a prompt without a project. Every image is saved here
-              <em>and</em> added to the Library as an unassigned asset, so you can review it, tag it, or file it into a project later.</p>
+            <p class="hint">One scene or several panels in a single image. Add reference photos for consistent characters and style. Results are saved to your Library.</p>
           </div>
         </div>
 
@@ -528,19 +536,39 @@
         </div>
 
         <div class="maker-layout">
-          <div class="card">
+          <div class="card generator-editor">
+            <div class="generator-mode" id="generator-mode" role="group" aria-label="Image composition">
+              <button type="button" data-generator-mode="single" aria-pressed="true">Single image</button>
+              <button type="button" data-generator-mode="panels" aria-pressed="false">Multi-panel image</button>
+            </div>
+            <div class="generator-layout-row hidden" id="generator-layout-row">
+              <label class="field">
+                <span class="field-label">Panel layout</span>
+                <select id="generator-layout">
+                  <option value="grid-2x2">4 panels · 2 × 2</option>
+                  <option value="side-by-side">2 panels · side by side</option>
+                  <option value="stacked">2 panels · stacked</option>
+                </select>
+              </label>
+              <div class="composition-preview" id="generator-layout-preview" aria-label="Panel positions"></div>
+            </div>
             <label class="field">
-              <span class="field-label">Prompt</span>
+              <span class="field-label" id="generator-prompt-label">Prompt</span>
               <textarea id="generator-prompt" rows="9"
                 placeholder="Describe the image: subject, setting, lighting, lens, mood, and style."></textarea>
             </label>
-            <div class="gen-prompt-controls">
+            <fieldset class="generator-panel-fields hidden" id="generator-panel-fields">
+              <legend>Panel prompts</legend>
+              <p class="hint">Describe a different scene in each panel. All panels are generated together in one image.</p>
+              <div id="generator-panels"></div>
+            </fieldset>
+            <div class="gen-prompt-controls generator-output-controls">
               <label class="field inline">
                 <span class="field-label">Image size</span>
                 <select id="generator-size"></select>
               </label>
               <label class="field inline">
-                <span class="field-label">Images</span>
+                <span class="field-label">Variations</span>
                 <select id="generator-count">
                   <option value="1">1</option>
                   <option value="2">2</option>
@@ -552,7 +580,8 @@
             </div>
             <p class="hint" id="generator-hint"></p>
 
-            <h3 class="settings-subtitle">Prompt presets</h3>
+            <details class="generator-details">
+            <summary>Prompt presets</summary>
             <div class="gen-prompt-controls">
               <label class="field inline">
                 <span class="field-label">Saved presets</span>
@@ -563,8 +592,17 @@
               <button class="btn btn-secondary btn-sm" id="generator-preset-delete" type="button">Delete</button>
             </div>
 
+            </details>
             <h3 class="settings-subtitle">Reference images <span class="hint" id="generator-reference-count"></span></h3>
-            <p class="hint">Up to 10 references guide the result. They are attached as visual references, not copied.</p>
+            <p class="hint" id="generator-reference-help">Attach up to 10 photos to guide every panel. PNG, JPEG, or WebP; 20 MB per photo and 24 MB combined.</p>
+            <div class="generator-upload-area">
+              <input type="file" id="generator-reference-file" accept="image/png,image/jpeg,image/webp" multiple aria-describedby="generator-reference-help" tabindex="-1" class="generator-file-input" />
+              <button class="btn btn-secondary" id="generator-reference-upload" type="button">Add reference photos</button>
+              <span class="hint" id="generator-upload-status" role="status" aria-live="polite">Choose one or several photos from your device.</span>
+            </div>
+            <div id="generator-reference-chips"></div>
+            <details class="generator-details">
+            <summary>Use Library or character images</summary>
             <div class="gen-prompt-controls">
               <label class="field inline">
                 <span class="field-label">From the Library</span>
@@ -579,14 +617,7 @@
               </label>
               <button class="btn btn-secondary btn-sm" id="generator-reference-add-character" type="button">＋ Add</button>
             </div>
-            <div class="gen-prompt-controls">
-              <label class="field inline">
-                <span class="field-label">Upload</span>
-                <input type="file" id="generator-reference-file" accept="image/png,image/jpeg,image/webp" />
-              </label>
-              <button class="btn btn-secondary btn-sm" id="generator-reference-upload" type="button">⬆ Upload</button>
-            </div>
-            <div id="generator-reference-chips"></div>
+            </details>
           </div>
 
           <div class="card">
@@ -1287,12 +1318,13 @@
           <h2 class="card-title">Standalone image generator</h2>
           <p>Generate images from a prompt <strong>without a project</strong>. Use it for one-off art, tests, covers, or anything you want to try before it belongs to a project.</p>
           <ol class="docs-list">
-            <li>Write a <strong>prompt</strong>: subject, setting, lighting, lens, mood, style.</li>
-            <li>Pick an <strong>image size</strong> and how many <strong>images</strong> to generate (1–4).</li>
+            <li>Choose <strong>Single image</strong> for one scene, or <strong>Multi-panel image</strong> to combine two or four scene prompts into one image. For a multi-panel image, choose a layout and fill every panel prompt; shared instructions are optional.</li>
+            <li>Pick an <strong>image size</strong> and how many <strong>variations</strong> to generate (1–4). Each variation is one complete image, including all panels.</li>
             <li>Click <strong>✨ Generate</strong>. The processing widget in the bottom-right corner shows the progress of each image.</li>
           </ol>
           <h3>Reference images</h3>
-          <p>Attach up to <strong>10</strong> references so the result follows a particular character, place, or look. Add one from the <strong>Library</strong>, from a final <strong>Character maker</strong> image, or <strong>upload</strong> a file. References are attached to the request as visual guidance; they are never copied or modified.</p>
+          <p>Use <strong>Add reference photos</strong> to select one or several images from your device. Attached thumbnails can be removed individually. You can also expand <strong>Use Library or character images</strong> to attach an existing image. Up to <strong>10</strong> references guide all panels: PNG, JPEG, or WebP, up to 20 MB each and 24 MB combined.</p>
+          <p><strong>Use prompts</strong> on a saved image restores its individual panel prompts, layout, and shared instructions for editing. The AI arranges the panels; exact framing can vary between results. On a phone or tablet, the <strong>Assistant</strong> button opens AI requests and CarniChat without narrowing the editor.</p>
           <h3>Prompt presets</h3>
           <p>Save the current prompt as a named preset, then <strong>Insert</strong> it into the prompt box later. Presets belong to your account.</p>
           <div class="docs-callout docs-callout-note">
@@ -1632,6 +1664,6 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="app.js?v=2026-10-25.8"></script>
+  <script src="app.js?v=2026-10-26.1"></script>
 </body>
 </html>

@@ -3,7 +3,7 @@
   --surface: #ffffff;
   --border: #e3e8f0;
   --text: #1c2333;
-  --muted: #6b7488;
+  --muted: #606b80;
   --primary: #4f46e5;
   --primary-hover: #4338ca;
   --primary-soft: #eef2ff;
@@ -1964,6 +1964,111 @@ main {
 .gen-image-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .gen-image-body strong { font-size: 13px; }
 .gen-image-error { color: #b91c1c; font-size: 12px; line-height: 1.5; }
+
+/* The editor stays in the page flow; optional tools open only when needed. */
+.generator-mode { display: flex; gap: 4px; padding: 4px; margin-bottom: 20px; border-radius: 10px; background: var(--bg); }
+.generator-mode button { flex: 1; min-height: 44px; padding: 8px 12px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.generator-mode button[aria-pressed="true"] { background: var(--surface); border-color: var(--primary); color: var(--primary); }
+.generator-mode button:disabled { cursor: wait; }
+.generator-layout-row { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 16px; align-items: center; margin-bottom: 16px; }
+.generator-layout-row .field { margin: 0; }
+.composition-preview { display: grid; gap: 3px; grid-template-columns: repeat(2, 1fr); }
+.composition-preview.layout-stacked { grid-template-columns: 1fr; }
+.composition-preview span { display: grid; place-items: center; min-height: 30px; border-radius: 4px; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; }
+.generator-panel-fields { min-width: 0; border: 0; padding: 0; margin: 0 0 20px; }
+.generator-panel-fields legend { padding: 0; font-size: 15px; font-weight: 700; }
+.generator-panel-fields > .hint { margin: 4px 0 16px; }
+#generator-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+#generator-panels .field { margin: 0; }
+.generator-editor { scroll-margin-top: 12px; }
+#panel-standalone-images .maker-layout { grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1250px) {
+  #panel-standalone-images .maker-layout { grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr); }
+}
+.generator-details { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 8px; }
+.generator-details summary { cursor: pointer; min-height: 44px; padding: 10px 0; font-weight: 600; font-size: 14px; }
+.generator-details[open] summary { margin-bottom: 8px; }
+.generator-upload-area { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 14px; }
+.generator-upload-area .hint { margin: 0; }
+.generator-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+.generator-chip { max-width: 100%; border-radius: 10px; }
+.generator-chip > span { min-width: 0; overflow-wrap: anywhere; }
+.generator-chip img { flex: 0 0 42px; width: 42px; height: 42px; border-radius: 6px; object-fit: cover; }
+.generator-chip .btn { flex-shrink: 0; min-width: 44px; min-height: 44px; }
+.maker-layout > *, .grid-two > * { min-width: 0; }
+.header-mobile-actions, .sidebar-mobile-head, .sidebar-backdrop { display: none; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+textarea, input { caret-color: var(--primary); }
+::selection { background: var(--primary-soft); color: var(--text); }
+
+/* Phones get the full editor width; the assistant becomes a dismissible drawer. */
+@media (max-width: 900px), (max-width: 1024px) and (max-height: 500px) {
+  .app-shell { height: 100dvh; }
+  .app-header { padding: max(10px, env(safe-area-inset-top)) 12px 8px; gap: 8px; }
+  .brand { gap: 8px; }
+  .brand-mark { width: 32px; height: 32px; font-size: 21px; border-radius: 9px; }
+  .brand-text h1 { font-size: 17px; }
+  .app-header .brand-text p { display: none; }
+  .header-mobile-actions { display: flex; gap: 6px; margin-left: auto; }
+  .header-right { width: 100%; min-width: 0; gap: 8px; }
+  .header-shared { width: 100%; min-width: 0; flex-wrap: nowrap; overflow-x: auto; padding: 2px 0; }
+  .module-tool { flex: 0 0 auto; padding: 10px 12px; min-height: 44px; }
+  .user-box { display: none; width: 100%; justify-content: flex-end; padding: 4px 0; border: 0; }
+  .account-open .user-box { display: flex; }
+  .user-name { min-width: 0; flex: 1; }
+  .app-body > .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 60; width: min(90vw, 340px); height: 100dvh; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); visibility: hidden; transform: translateX(-100%); transition: transform 0.18s ease, visibility 0.18s; }
+  .sidebar-open .sidebar { visibility: visible; transform: translateX(0); }
+  .sidebar-mobile-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 10px 14px; gap: 8px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .sidebar-open .sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 59; border: 0; background: rgba(16, 24, 40, 0.45); }
+  .sidebar-chat { overflow-y: auto; }
+  .workspace { width: 100%; }
+  main { padding: 16px 12px max(32px, env(safe-area-inset-bottom)); }
+  .card { padding: 16px; margin-bottom: 16px; }
+  .module-bar { padding: 8px 12px; }
+  .module-list { width: 100%; flex-wrap: nowrap; }
+  .module-button { flex: 1; min-width: 0; min-height: 44px; padding: 7px 8px; gap: 7px; }
+  .module-label { font-size: 13px; }
+  .module-tagline { display: none; }
+  .module-nav-wrap { padding: 0 12px; }
+  .module-nav { flex-wrap: nowrap; overflow-x: auto; padding: 8px 0; }
+  .module-nav-heading { display: none; }
+  .module-nav-button { flex-shrink: 0; min-height: 44px; padding: 7px 12px; }
+  .module-context { gap: 8px; }
+  .module-context .field { flex: 1; min-width: 0; }
+  .module-progress { order: 3; flex-basis: 100%; margin: 0; font-size: 12px; white-space: normal; }
+  .module-subnav { overflow-x: auto; flex-wrap: nowrap; }
+  .module-view-button { flex-shrink: 0; min-height: 44px; }
+  .btn, .chat-mode, .pm-stage-tab, .auth-tab { min-height: 44px; }
+  input[type="text"], input[type="password"], input[type="number"], input[type="search"], textarea, select { font-size: 16px; min-width: 0; }
+  .maker-layout, .grid-two, .modal-row, .ref-inline-fields, .ref-character-row, .gen-scene-grid { grid-template-columns: minmax(0, 1fr); }
+  .gen-prompt-controls .field { min-width: 0; flex-basis: 100%; }
+  .generator-output-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .generator-output-controls > .btn { grid-column: 1 / -1; }
+  #generator-panels { grid-template-columns: minmax(0, 1fr); }
+  #generator-gallery { grid-template-columns: minmax(0, 1fr); }
+  .generator-layout-row { grid-template-columns: minmax(0, 1fr) 76px; gap: 10px; }
+  .generator-upload-area > .btn { width: 100%; }
+  .pm-list { grid-template-columns: minmax(0, 1fr); }
+  .pm-toolbar, .pm-controls { gap: 8px; width: 100%; }
+  .pm-controls > input[type="search"], .pm-controls > select { width: 100%; }
+  .pm-stage-tabs { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
+  .pm-stage-tab { flex-shrink: 0; white-space: nowrap; }
+  .story-head { flex-direction: column; gap: 12px; }
+  #panel-standalone-images .story-head .card-title { margin-bottom: 0; }
+  #panel-standalone-images .story-head .hint { margin-top: 6px; }
+  .story-head-controls, .story-head-controls .field { width: 100%; min-width: 0; }
+  .process-widget { max-height: min(40dvh, 300px); overflow-y: auto; bottom: max(8px, env(safe-area-inset-bottom)); }
+  .modal-backdrop { padding: 12px; }
+  .modal { padding: 18px; max-height: calc(100dvh - 24px); }
+  .modal-actions { flex-wrap: wrap; }
+}
+@media (max-width: 1024px) and (max-height: 500px) {
+  .workspace { overflow-y: auto; }
+  main { flex: 0 0 auto; overflow: visible; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
 
 @media (max-width: 1100px) {
   .sidebar { width: 260px; flex-basis: 260px; }

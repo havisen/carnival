@@ -74,9 +74,15 @@ function schema() {
     CREATE INDEX IF NOT EXISTS idx_generation_references_user
       ON generation_references(user_id, created_at DESC);
   `);
+  const columns = rawDb.prepare('PRAGMA table_info(standalone_generations)').all();
+  if (!columns.some((column) => column.name === 'composition_json')) {
+    rawDb.exec('ALTER TABLE standalone_generations ADD COLUMN composition_json TEXT');
+  }
 }
 
 function toGeneration(row) {
+  let composition = null;
+  try { composition = row.composition_json ? JSON.parse(row.composition_json) : null; } catch (_) { /* legacy row */ }
   return {
     id: row.id,
     prompt: row.prompt,
@@ -88,6 +94,7 @@ function toGeneration(row) {
     assetId: row.asset_id || '',
     assetVersionId: row.asset_version_id || '',
     references: parseJsonArray(row.references_json),
+    composition,
     createdAt: row.created_at,
   };
 }
@@ -134,8 +141,8 @@ function create(userId, data) {
   const id = text(data && data.id, 80) || crypto.randomUUID();
   rawDb.prepare(`
     INSERT INTO standalone_generations
-      (id, user_id, prompt, image_model, image_size, file, mime, bytes, asset_id, asset_version_id, references_json, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, user_id, prompt, image_model, image_size, file, mime, bytes, asset_id, asset_version_id, references_json, composition_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     userId,
@@ -148,6 +155,7 @@ function create(userId, data) {
     text(data && data.assetId, 80) || null,
     text(data && data.assetVersionId, 80) || null,
     JSON.stringify(Array.isArray(data && data.references) ? data.references.slice(0, 10) : []),
+    data && data.composition ? JSON.stringify(data.composition) : null,
     now()
   );
   return get(userId, id);
