@@ -1,0 +1,23 @@
+[Unit]
+Description=Carnival story and image studio
+After=network.target
+
+[Service]
+Type=simple
+User=carnival
+Group=carnival
+WorkingDirectory=/opt/carnival/current
+EnvironmentFile=/etc/carnival/environment
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/carnival
+
+[Install]
+WantedBy=multi-user.target
