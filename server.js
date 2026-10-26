@@ -20,6 +20,7 @@ const requestTracker = require('./track').init(db.db);
 security.init(db.DATA_DIR);
 
 const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || undefined;
 const APP_VERSION = '4.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const CHARACTER_SHEET_LAYOUT_REFERENCE_PATH = path.join(
@@ -4365,7 +4366,7 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log(`\n  Carnival App v${APP_VERSION} running:`);
   console.log(`  ➜  http://localhost:${PORT}`);
   console.log(`  ➜  database: ${db.DB_PATH}\n`);
