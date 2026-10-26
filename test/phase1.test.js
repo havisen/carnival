@@ -201,6 +201,7 @@ test('Phase 1 auth, sessions, CSRF, rate limiting, and headers', async (t) => {
     cookie = result.cookie;
 
     const raw = new DatabaseSync(path.join(dataDir, 'app.db'));
+    raw.exec('PRAGMA busy_timeout = 5000');
     raw.prepare('UPDATE sessions SET expires_at = 1').run();
     raw.close();
 
