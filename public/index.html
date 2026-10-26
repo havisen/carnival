@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-26.6" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-26.7" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -460,83 +460,7 @@
         </div>
       </section>
 
-      <!-- ============================================================ -->
-      <!-- PROJECT CHARACTERS TAB                                        -->
-      <!-- ============================================================ -->
-      <section class="panel" id="panel-project-characters" role="tabpanel">
-        <div class="card story-head">
-          <div>
-            <h2 class="card-title">Character images</h2>
-            <p class="hint">Build the cast for the current story. Each character here belongs to that story and generates its own
-              portraits and three-view character sheets, so a story's characters stay together. You can also copy a final image
-              from the Character Maker.</p>
-          </div>
-        </div>
-
-        <div class="error-state hidden" id="project-characters-error">
-          <p id="project-characters-error-text">Could not load project characters.</p>
-          <button class="btn btn-secondary btn-sm" id="project-characters-retry" type="button">Retry</button>
-        </div>
-
-        <div class="maker-layout">
-          <div class="card">
-            <label class="field">
-              <span class="field-label">Project</span>
-              <select id="project-characters-project"></select>
-            </label>
-            <div class="results-head">
-              <h2 class="card-title">Characters <span class="hint" id="project-characters-count"></span></h2>
-              <button class="btn btn-primary btn-sm" id="project-character-new" type="button">＋ New character</button>
-            </div>
-            <div id="project-character-list"></div>
-          </div>
-
-          <div class="card">
-            <div class="results-head">
-              <h2 class="card-title" id="project-character-editor-title">Character</h2>
-              <button class="btn btn-danger btn-sm hidden" id="project-character-delete" type="button">Delete character</button>
-            </div>
-            <p class="hint" id="project-character-empty">Choose a project and a character, or create a new one.</p>
-            <div class="hidden" id="project-character-fields">
-              <label class="field">
-                <span class="field-label">Name</span>
-                <input type="text" id="project-character-name" maxlength="120" placeholder="e.g. Ava Reyes" />
-              </label>
-              <label class="field">
-                <span class="field-label">Description</span>
-                <textarea id="project-character-description" rows="6" maxlength="6000"
-                  placeholder="Age, build, height, hair, eyes, skin, wardrobe, and distinguishing details. This text drives every image for this character."></textarea>
-              </label>
-              <div class="gen-prompt-controls">
-                <label class="field inline">
-                  <span class="field-label">Image type</span>
-                  <select id="project-character-mode">
-                    <option value="sheet" selected>Character sheet (3 views)</option>
-                    <option value="portrait">Portrait</option>
-                  </select>
-                </label>
-                <label class="field inline">
-                  <span class="field-label">Image size</span>
-                  <select id="project-character-size"></select>
-                </label>
-                <button class="btn btn-secondary btn-sm" id="project-character-save" type="button">💾 Save</button>
-                <button class="btn btn-primary btn-sm" id="project-character-generate" type="button">✨ Generate image</button>
-              </div>
-              <div class="gen-prompt-controls">
-                <label class="field inline">
-                  <span class="field-label">Reuse from Character maker</span>
-                  <select id="project-character-reuse"></select>
-                </label>
-                <button class="btn btn-secondary btn-sm" id="project-character-import" type="button">⤵ Copy final image</button>
-              </div>
-              <p class="hint" id="project-character-hint"></p>
-              <div id="project-character-versions"></div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ============================================================ -->
+<!-- ============================================================ -->
       <!-- STANDALONE IMAGE GENERATOR TAB                                -->
       <!-- ============================================================ -->
       <section class="panel" id="panel-standalone-images" role="tabpanel">
@@ -664,7 +588,6 @@
               <span class="field-label">Story</span>
               <select id="story-project"></select>
             </label>
-            <button class="btn btn-primary btn-sm" id="story-generate-worksheet" type="button">Generate worksheet</button>
           </div>
         </div>
 
@@ -674,16 +597,30 @@
         </div>
         <div class="empty-state hidden" id="story-empty">
           <span class="empty-icon">📖</span>
-          <p>Choose a project to build its story brief, references, scenes, and prompt drafts.</p>
+          <p>Choose a story to edit its idea, character references, and scene references.</p>
         </div>
         <div class="error-state hidden" id="story-error">
           <p id="story-error-text">Could not load the story workspace.</p>
           <button class="btn btn-secondary btn-sm" id="story-retry" type="button">Retry</button>
         </div>
 
-        <div class="hidden" id="story-worksheet">
+        <div class="hidden" id="story-forms">
+          <div class="card" id="studio-idea-card" data-story-step="idea">
+            <div class="results-head">
+              <h2 class="card-title">Story idea</h2>
+              <button class="btn btn-primary btn-sm" id="studio-idea-save" type="button">Save idea</button>
+            </div>
+            <div class="story-form-grid">
+              <label class="field"><span class="field-label">Title</span><input id="studio-idea-title" maxlength="200" /></label>
+              <label class="field"><span class="field-label">Stage</span><input id="studio-idea-stage" readonly /></label>
+              <label class="field story-span"><span class="field-label">Idea</span><textarea id="studio-idea-text" rows="3" maxlength="4000"></textarea></label>
+              <label class="field story-span"><span class="field-label">Description</span><textarea id="studio-idea-description" rows="3" maxlength="4000"></textarea></label>
+            </div>
+            <p class="hint" id="studio-idea-hint">Edit the title, idea, and description for this story.</p>
+          </div>
+        <div id="story-worksheet">
           <div class="card" data-story-step="cast">
-            <h2 class="card-title">Reference worksheet <span id="story-reference-status" class="hint"></span></h2>
+            <h2 class="card-title">Character references <span id="story-reference-status" class="hint"></span></h2>
             <div id="story-source-references"></div>
             <div class="results-head">
               <label class="field inline"><span class="field-label">Character</span><select id="worksheet-character"></select></label>
@@ -710,97 +647,6 @@
             <div id="worksheet-locations"></div>
           </div>
         </div>
-        <div class="hidden" id="story-content">
-          <div class="card story-brief-card" data-story-step="idea">
-            <div class="results-head">
-              <h2 class="card-title">Story brief</h2>
-            <button class="btn btn-primary btn-sm" id="story-save-brief" type="button">Save brief</button>
-            </div>
-            <div class="story-form-grid">
-              <label class="field"><span class="field-label">Story title</span><input id="story-brief-title" maxlength="200" /></label>
-              <label class="field"><span class="field-label">Logline</span><input id="story-brief-logline" maxlength="500" /></label>
-              <label class="field story-span"><span class="field-label">Premise</span><textarea id="story-brief-premise" rows="3" maxlength="5000"></textarea></label>
-              <label class="field"><span class="field-label">Tone</span><input id="story-brief-tone" maxlength="200" /></label>
-              <label class="field"><span class="field-label">Genre</span><input id="story-brief-genre" maxlength="200" /></label>
-              <label class="field"><span class="field-label">Audience</span><input id="story-brief-audience" maxlength="200" /></label>
-              <label class="field"><span class="field-label">Setting summary</span><input id="story-brief-setting" maxlength="3000" /></label>
-            </div>
-            <p class="hint" id="story-brief-hint">The brief is the canonical root of the story.</p>
-          </div>
-
-          <div class="card" id="studio-idea-card" data-story-step="idea">
-            <div class="results-head">
-              <h2 class="card-title">Story idea</h2>
-              <button class="btn btn-primary btn-sm" id="studio-idea-save" type="button">Save idea</button>
-            </div>
-            <div class="story-form-grid">
-              <label class="field"><span class="field-label">Title</span><input id="studio-idea-title" maxlength="200" /></label>
-              <label class="field"><span class="field-label">Stage</span><input id="studio-idea-stage" readonly /></label>
-              <label class="field story-span"><span class="field-label">Idea</span><textarea id="studio-idea-text" rows="3" maxlength="4000"></textarea></label>
-              <label class="field story-span"><span class="field-label">Description</span><textarea id="studio-idea-description" rows="3" maxlength="4000"></textarea></label>
-            </div>
-            <p class="hint" id="studio-idea-hint">The idea is what the story grew from; the brief above is its canonical root. Both belong to this story only.</p>
-          </div>
-
-          <div class="grid-two story-references">
-            <div class="col">
-              <div class="card" data-story-step="cast">
-                <div class="results-head">
-                  <h2 class="card-title">Character bibles</h2>
-                  <button class="btn btn-secondary btn-sm" id="story-add-character" type="button">＋ Character</button>
-                </div>
-                <div id="story-characters"></div>
-              </div>
-              <div class="card" data-story-step="cast">
-                <div class="results-head">
-                  <h2 class="card-title">Locations</h2>
-                  <button class="btn btn-secondary btn-sm" id="story-add-location" type="button">＋ Location</button>
-                </div>
-                <div id="story-locations"></div>
-              </div>
-            </div>
-            <div class="col">
-              <div class="card" data-story-step="cast">
-                <div class="results-head">
-                  <h2 class="card-title">Style references</h2>
-                  <button class="btn btn-secondary btn-sm" id="story-add-style" type="button">＋ Style</button>
-                </div>
-                <div id="story-styles"></div>
-              </div>
-              <div class="card" data-story-step="scenes">
-                <div class="results-head">
-                  <h2 class="card-title">Scene matrix</h2>
-                  <div class="results-actions">
-                    <button class="btn btn-secondary btn-sm" id="story-add-scene" type="button">＋ Scene</button>
-                    <button class="btn btn-primary btn-sm" id="story-save-scenes" type="button">Save scenes</button>
-                  </div>
-                </div>
-                <div id="story-scenes"></div>
-                <p class="hint" id="story-scene-hint">Only approved locations and characters can be linked. The server rejects unapproved links.</p>
-              </div>
-            </div>
-          </div>
-
-          <div class="card story-prompts-card" data-story-step="cast">
-            <div class="results-head">
-              <h2 class="card-title">Character sheets</h2>
-              <label class="field inline">
-                <span class="field-label">Character</span>
-                <select id="story-sheet-character"></select>
-              </label>
-              <button class="btn btn-primary btn-sm" id="story-generate-sheet" type="button">✨ Generate character sheet</button>
-            </div>
-            <div id="story-sheets"></div>
-            <p class="hint" id="story-sheet-hint">Generate a photorealistic character reference image. Each generation creates a new version; promote one to final.</p>
-          </div>
-
-          <div class="card story-warnings-card" data-story-step="scenes">
-            <div class="results-head">
-              <h2 class="card-title">Continuity warnings</h2>
-              <span class="hint" id="story-warning-count">Not checked</span>
-            </div>
-            <div id="story-warnings"></div>
-          </div>
         </div>
       </section>
 
@@ -1132,7 +978,7 @@
                 <select id="text-provider-pref" aria-label="Default text provider"></select>
                 <input id="text-model-pref" list="all-chat-model-options" maxlength="100" value="deepseek-v4-pro" />
               </label>
-              <p class="hint">Used for ideas, reference material, worksheets, and scene prompts. Refresh models to load the lists available to your provider keys, or enter a model ID.</p>
+              <p class="hint">Used for ideas, reference material, action and location references, and scene prompts. Refresh models to load the lists available to your provider keys, or enter a model ID.</p>
 
               <label class="field">
                 <span class="field-label">Image generation</span>
@@ -1390,7 +1236,7 @@
 
         <div class="card" id="docs-story">
           <h2 class="card-title">Characters, Locations &amp; Scenes</h2>
-          <p>These are three Story Studio steps — <strong>Idea</strong>, <strong>Characters &amp; Locations</strong>, and <strong>Scenes</strong> — that share one screen, so the workflow bar shows only the cards for the step you are on. Choose a story and click <strong>Generate worksheet</strong> to view its name, idea, characters, setting, Reference Material, and Character References.</p>
+          <p>These are three Story Studio steps — <strong>Idea</strong>, <strong>Characters &amp; Locations</strong>, and <strong>Scenes</strong> — that share one screen, so the workflow bar shows only the cards for the step you are on. Choose a story to open its fields directly. Idea shows the editable story idea; Characters &amp; Locations shows the shared references and sheet generators; Scenes shows the action and location generators.</p>
           <h3>Character reference sheets</h3>
           <p>Generate one selected character sheet or all sheets using only the individual Character Reference and the shared layout template. Preview each version; click <strong>Add this sheet</strong> when satisfied, or generate again. Add a sheet for every character to complete the reference task.</p>
           <h3>Action references</h3>
@@ -1713,9 +1559,9 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="image-models.js?v=2026-10-26.6"></script>
-  <script src="chat-models.js?v=2026-10-26.6"></script>
-  <script src="app.js?v=2026-10-26.6"></script>
-  <script src="workspace-tools.js?v=2026-10-26.6"></script>
+  <script src="image-models.js?v=2026-10-26.7"></script>
+  <script src="chat-models.js?v=2026-10-26.7"></script>
+  <script src="app.js?v=2026-10-26.7"></script>
+  <script src="workspace-tools.js?v=2026-10-26.7"></script>
 </body>
 </html>

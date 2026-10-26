@@ -12,7 +12,7 @@ function workspaceReset() {
   workspaceChatImages = []; workspaceModels = []; workspaceChatModelDirty = false; state.library.section = 'all'; state.reference.chatDraft = null;
   ['#chat-attachments','#prompt-analysis-output','#drive-files'].forEach(id => $(id).replaceChildren());
   $('#library-image-content').classList.remove('hidden'); $('#library-analysis').classList.add('hidden'); $('#library-drive').classList.add('hidden');
-  $('#character-mode').value = 'sheet'; $('#project-character-mode').value = 'sheet';
+  $('#character-mode').value = 'sheet';
 }
 async function ensureChatHistory() {
   if (!state.user || workspaceHistoryReady) return;

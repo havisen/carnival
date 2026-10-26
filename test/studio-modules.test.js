@@ -337,7 +337,7 @@ test('Carnival module navigation contract holds', async () => {
   assert.ok(app.includes('function renderStoryStepHead('), 'the story heading must follow the active step');
   assert.ok(app.includes('renderStoryStepHead();'), 'the step change must refresh the heading');
   assert.ok(html.includes('>Character Maker<'), 'the Character Maker panel should use the module wording');
-  assert.ok(html.includes('>Character images<'), 'the project cast panel should use the module wording');
+  assert.doesNotMatch(html, /id="panel-project-characters"/, 'the retired project character screen should not remain in the UI');
   assert.doesNotMatch(html, /Open Project Management/, 'buttons should use the module wording');
   assert.doesNotMatch(html, /Open Story workspace/, 'buttons should use the module wording');
 
