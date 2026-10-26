@@ -48,10 +48,13 @@ const DEFAULT_IMAGE_MODEL = IMAGE_MODEL_SIZES.has(configuredImageModel)
 const TEXT_MODELS = new Set([
   'deepseek-v4-pro',
 ]);
-const CHAT_PROVIDERS = new Set(['deepseek', 'anthropic', 'openai']);
+const CHAT_PROVIDERS = new Set(['deepseek', 'anthropic', 'openai', 'openai-direct']);
 const ANTHROPIC_ENDPOINT =
   process.env.ANTHROPIC_ENDPOINT || 'https://api.anthropic.com/v1/messages';
 const OPENAI_DEFAULT_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+// Direct credentials never follow a user's compatible-provider URL or its env override.
+const OPENAI_DIRECT_BASE_URL = process.env.NODE_ENV === 'test' && process.env.OPENAI_DIRECT_TEST_BASE_URL
+  ? process.env.OPENAI_DIRECT_TEST_BASE_URL : 'https://api.openai.com/v1';
 const ANTHROPIC_DEFAULT_MODEL = process.env.ANTHROPIC_DEFAULT_MODEL || 'claude-sonnet-4-20250514';
 const OPENAI_DEFAULT_MODEL = process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini';
 const IMAGE_DIR = path.join(db.DATA_DIR, 'images');
@@ -361,6 +364,9 @@ function publicUser(row) {
     hasOpenAIKey: Boolean(row.openai_api_key_enc),
     openAIKeyHint: row.openai_api_key_hint || null,
     openAIBaseUrl: row.openai_base_url || '',
+    hasDirectOpenAIKey: Boolean(row.openai_direct_api_key_enc),
+    directOpenAIKeyHint: row.openai_direct_api_key_hint || null,
+    openAIImageProvider: row.openai_image_provider === 'openai-direct' ? 'openai-direct' : 'openai',
     guideProvider: CHAT_PROVIDERS.has(row.guide_provider) ? row.guide_provider : 'deepseek',
     guideModel: row.guide_model || '',
     guideContext: row.guide_context || '',
@@ -524,7 +530,9 @@ async function handleSaveAISettings(req, res) {
     fail(400, 'Unsupported image model. Choose a model from the image-model list.');
   }
 
-  const updated = db.setUserAISettings(session.user_id, textModel, imageModel);
+  const openAIImageProvider = body.openAIImageProvider === undefined ? session.openai_image_provider : body.openAIImageProvider;
+  if (!['openai', 'openai-direct'].includes(openAIImageProvider)) fail(400, 'Choose OpenAI or OpenAI-compatible for GPT Image.');
+  const updated = db.setUserAISettings(session.user_id, textModel, imageModel, openAIImageProvider);
   return sendJSON(res, 200, { user: publicUser(updated) });
 }
 
@@ -588,6 +596,19 @@ function handleDeleteOpenAIKey(req, res) {
   const session = requireUser(req);
   const updated = db.setUserOpenAIKey(session.user_id, null, null, '');
   return sendJSON(res, 200, { user: publicUser(updated) });
+}
+
+async function handleSaveDirectOpenAIKey(req, res) {
+  const session = requireUser(req);
+  const body = await readJSON(req);
+  const apiKey = validProviderKey(body.apiKey, 'OpenAI');
+  const updated = db.setUserDirectOpenAIKey(session.user_id, security.encryptApiKey(apiKey), security.maskApiKey(apiKey));
+  return sendJSON(res, 200, { user: publicUser(updated) });
+}
+
+function handleDeleteDirectOpenAIKey(req, res) {
+  const session = requireUser(req);
+  return sendJSON(res, 200, { user: publicUser(db.setUserDirectOpenAIKey(session.user_id, null, null)) });
 }
 
 async function handleSaveChatSettings(req, res) {
@@ -1389,12 +1410,14 @@ function resolveChatTarget(user, mode, requireKey = true) {
     if (requireKey) apiKey = security.decryptApiKey(user.anthropic_api_key_enc);
     endpoint = ANTHROPIC_ENDPOINT;
     if (!model) model = ANTHROPIC_DEFAULT_MODEL;
-  } else if (provider === 'openai') {
-    if (requireKey && !user.openai_api_key_enc) {
-      fail(409, 'No OpenAI-compatible API key is saved for your account. Add one in Settings.', 'NO_OPENAI_KEY');
+  } else if (provider === 'openai' || provider === 'openai-direct') {
+    const direct = provider === 'openai-direct';
+    const encrypted = direct ? user.openai_direct_api_key_enc : user.openai_api_key_enc;
+    if (requireKey && !encrypted) {
+      fail(409, `No ${direct ? 'OpenAI' : 'OpenAI-compatible'} API key is saved for your account. Add one in Settings.`, direct ? 'NO_DIRECT_OPENAI_KEY' : 'NO_OPENAI_KEY');
     }
-    if (requireKey) apiKey = security.decryptApiKey(user.openai_api_key_enc);
-    const baseUrl = (user.openai_base_url || '').trim() || OPENAI_DEFAULT_BASE_URL;
+    if (requireKey) apiKey = security.decryptApiKey(encrypted);
+    const baseUrl = direct ? OPENAI_DIRECT_BASE_URL : (user.openai_base_url || '').trim() || OPENAI_DEFAULT_BASE_URL;
     endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
     if (!model) model = OPENAI_DEFAULT_MODEL;
   } else {
@@ -2828,9 +2851,10 @@ function imageApiKey(session) {
   const model = IMAGE_MODELS.find((item) => item.id === session.image_model)
     || IMAGE_MODELS.find((item) => item.id === DEFAULT_IMAGE_MODEL);
   const openAI = model.provider === 'openai';
-  const label = openAI ? 'OpenAI' : 'BytePlus';
-  const encrypted = openAI ? session.openai_api_key_enc : session.byteplus_api_key_enc;
-  if (!encrypted) fail(409, `No ${label} API key is saved for your account. Add one in Settings.`, openAI ? 'NO_OPENAI_IMAGE_KEY' : 'NO_IMAGEGEN_KEY');
+  const direct = session.openai_image_provider === 'openai-direct';
+  const label = openAI ? (direct ? 'OpenAI' : 'OpenAI-compatible') : 'BytePlus';
+  const encrypted = openAI ? (direct ? session.openai_direct_api_key_enc : session.openai_api_key_enc) : session.byteplus_api_key_enc;
+  if (!encrypted) fail(409, `No ${label} API key is saved for your account. Add one in Settings.`, openAI ? (direct ? 'NO_DIRECT_OPENAI_KEY' : 'NO_OPENAI_IMAGE_KEY') : 'NO_IMAGEGEN_KEY');
   const apiKey = security.decryptApiKey(encrypted);
   if (!apiKey) fail(500, `Your saved ${label} API key could not be read. Please save it again.`, 'IMAGEGEN_KEY_UNREADABLE');
   return apiKey;
@@ -2845,7 +2869,7 @@ async function generateImageBuffer(apiKey, imageModel, size, prompt, referenceIm
     try {
       return await generateOpenAIImage({
         apiKey, model: imageModel, size, prompt, images,
-        baseUrl: (session.openai_base_url || '').trim() || OPENAI_DEFAULT_BASE_URL,
+        baseUrl: session.openai_image_provider === 'openai-direct' ? OPENAI_DIRECT_BASE_URL : (session.openai_base_url || '').trim() || OPENAI_DEFAULT_BASE_URL,
         userId: session.user_id,
       }, (url, options) => requestTracker.fetch(url, options, { provider: 'openai-images' }));
     } catch (err) {
@@ -5034,6 +5058,11 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/me/openai-key') {
     if (method === 'PUT') return handleSaveOpenAIKey(req, res);
     if (method === 'DELETE') return handleDeleteOpenAIKey(req, res);
+    fail(405, 'Method not allowed.');
+  }
+  if (pathname === '/api/me/openai-direct-key') {
+    if (method === 'PUT') return handleSaveDirectOpenAIKey(req, res);
+    if (method === 'DELETE') return handleDeleteDirectOpenAIKey(req, res);
     fail(405, 'Method not allowed.');
   }
 
