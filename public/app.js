@@ -299,13 +299,14 @@ class ApiError extends Error {
 }
 
 async function api(path, { method = 'GET', body } = {}) {
+  const formData = body instanceof FormData;
   let res;
   try {
     res = await fetch(path, {
       method,
       credentials: 'same-origin',
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: body === undefined || formData ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : formData ? body : JSON.stringify(body),
     });
   } catch (_) {
     throw new ApiError('Network error. Check your connection and try again.', 0);
@@ -1274,6 +1275,7 @@ function openLibraryDetail(id) {
   state.library.selectedId = id;
   state.library.selectedAssetId = image.assetId;
   state.library.currentAsset = { ...image, id: image.assetId };
+  resetLibrarySplit();
   libraryReturnFocus = document.activeElement;
   const metadata = image.metadata || {};
   const review = libraryReviewLabel(metadata);
@@ -1366,6 +1368,7 @@ async function hydrateLibraryDetail(assetId) {
 }
 
 function renderLibraryAssetDetail(asset) {
+  $('#library-split-button').disabled = librarySplitBusy || asset.missing;
   const metadata = asset.metadata || {};
   const review = libraryReviewLabel(metadata);
 
@@ -1385,6 +1388,7 @@ function renderLibraryAssetDetail(asset) {
   addLibraryFact(fileFacts, 'Relative path', libraryRecorded(asset.relativePath), { code: true });
   addLibraryFact(fileFacts, 'Asset ID', libraryRecorded(asset.id), { code: true });
   addLibraryFact(fileFacts, 'Current version', `${asset.revision || '—'} · ${asset.isSource ? 'source' : 'derived'}`);
+  if (asset.derivedFromVersionId) addLibraryFact(fileFacts, 'Derived from version', asset.derivedFromVersionId, { code: true });
   addLibraryFact(fileFacts, 'Lifecycle', libraryRecorded(asset.lifecycleStatus));
   addLibraryFact(fileFacts, 'File type', asset.extension ? asset.extension.toUpperCase() : 'Not recorded');
   addLibraryFact(fileFacts, 'Dimensions', asset.width && asset.height ? `${asset.width} × ${asset.height}` : 'Not recorded');
@@ -1510,11 +1514,104 @@ function closeLibraryDetail() {
   state.library.selectedAssetId = null;
   state.library.currentAsset = null;
   state.library.reviewData = null;
+  resetLibrarySplit();
   if (libraryReturnFocus && document.contains(libraryReturnFocus)) {
     libraryReturnFocus.focus();
   }
   libraryReturnFocus = null;
 }
+
+let librarySplitBusy = false;
+
+function resetLibrarySplit() {
+  $('#library-split-button').disabled = librarySplitBusy;
+  $('#library-split-button').textContent = librarySplitBusy ? 'Splitting…' : 'Split into 4 photos';
+  $('#library-split-status').textContent = 'Cuts a 2 × 2 collage into four separate photos. The original stays in your Library.';
+  $('#library-split-results').replaceChildren();
+  $('#library-split-results').classList.add('hidden');
+}
+
+$('#library-split-button').addEventListener('click', async () => {
+  const asset = state.library.currentAsset;
+  if (librarySplitBusy || !asset?.id) return;
+  const ownerId = state.user?.id;
+  const sourceId = asset.id;
+  const button = $('#library-split-button');
+  const processId = startProcess('Splitting collage into 4 photos');
+  librarySplitBusy = true;
+  button.disabled = true;
+  button.textContent = 'Splitting…';
+  $('#library-split-results').replaceChildren();
+  $('#library-split-results').classList.add('hidden');
+  $('#library-split-status').textContent = 'Preparing the four photos…';
+  let bitmap;
+  let canvas;
+  try {
+    // Fetch the current version explicitly, rather than cropping a stale preview.
+    const { asset: current } = await api(`/api/assets/${encodeURIComponent(sourceId)}`);
+    const response = await fetch(current.url, { credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error('The source image could not be loaded. Reopen it and try again.');
+    bitmap = await createImageBitmap(await response.blob());
+    const { width, height } = bitmap;
+    if (width < 2 || height < 2 || width * height > 16000000) throw new Error('Choose an image between 2 × 2 pixels and 16 megapixels.');
+    const midX = Math.floor(width / 2);
+    const midY = Math.floor(height / 2);
+    const parts = [[0, 0, midX, midY], [midX, 0, width - midX, midY],
+      [0, midY, midX, height - midY], [midX, midY, width - midX, height - midY]];
+    const form = new FormData();
+    form.append('sourceVersionId', current.versionId);
+    form.append('width', String(width));
+    form.append('height', String(height));
+    canvas = document.createElement('canvas');
+    let totalBytes = 0;
+    for (let index = 0; index < parts.length; index++) {
+      const [x, y, w, h] = parts[index];
+      canvas.width = w; canvas.height = h;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('This browser could not prepare the photos. Try reopening the page.');
+      context.drawImage(bitmap, x, y, w, h, 0, 0, w, h);
+      const photo = await new Promise((resolve, reject) => canvas.toBlob(
+        (blob) => blob ? resolve(blob) : reject(new Error('A photo could not be prepared. Try a smaller image.')), 'image/png'));
+      totalBytes += photo.size;
+      if (totalBytes > 20 * 1024 * 1024 - 65536) throw new Error('The four photos exceed 20 MB. Try a smaller collage.');
+      form.append('photos', photo, `photo-${index + 1}.png`);
+    }
+    if (state.user?.id !== ownerId) return;
+    updateProcess(processId, 'Saving 4 split photos to Library');
+    const { photos } = await api(`/api/assets/${encodeURIComponent(sourceId)}/split`, { method: 'POST', body: form });
+    if (state.user?.id !== ownerId) return;
+    if (state.library.selectedAssetId === sourceId) {
+      const results = $('#library-split-results');
+      const labels = ['Top left', 'Top right', 'Bottom left', 'Bottom right'];
+      photos.forEach((photo, index) => {
+        const item = document.createElement('div');
+        const preview = document.createElement('img');
+        preview.src = photo.url; preview.alt = labels[index]; preview.loading = 'lazy';
+        const download = document.createElement('a');
+        download.href = photo.url; download.download = photo.name;
+        download.className = 'btn btn-ghost btn-sm';
+        download.textContent = `Download ${index + 1} · ${labels[index]}`;
+        item.append(preview, download); results.append(item);
+      });
+      results.classList.remove('hidden');
+      $('#library-split-status').textContent = '4 photos saved to Library. Each can be opened or downloaded separately.';
+    }
+    await loadLibrary(true);
+    toast('4 photos saved to Library. Original collage kept.', 'success');
+  } catch (err) {
+    if (state.user?.id === ownerId) {
+      if (state.library.selectedAssetId === sourceId) $('#library-split-status').textContent = err.message || 'Could not split the collage. Your original is unchanged.';
+      toast(err.message || 'Could not split the collage.', 'error');
+    }
+  } finally {
+    bitmap?.close();
+    if (canvas) { canvas.width = 0; canvas.height = 0; }
+    librarySplitBusy = false;
+    button.disabled = !state.library.currentAsset || state.library.currentAsset.missing;
+    button.textContent = 'Split into 4 photos';
+    finishProcess(processId);
+  }
+});
 
 function resetLibrary() {
   closeLibraryDetail();
