@@ -384,6 +384,7 @@ function showApp() {
   renderBytePlusKeyState();
   renderAnthropicKeyState();
   renderOpenAIKeyState();
+  renderDirectOpenAIKeyState();
   applyAiSettings();
   applyChatSettings();
   startSidebarTrackPolling();
@@ -757,6 +758,50 @@ $('#openai-remove-key').addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 // Chat assistants (Guide + Reviewer)
 // ---------------------------------------------------------------------------
+function renderDirectOpenAIKeyState() {
+  const saved = Boolean(state.user && state.user.hasDirectOpenAIKey);
+  $('#openai-direct-key-empty').classList.toggle('hidden', saved);
+  $('#openai-direct-key-saved').classList.toggle('hidden', !saved);
+  $('#openai-direct-key-hint').textContent = saved ? state.user.directOpenAIKeyHint || 'saved key' : '—';
+  $('#openai-direct-key-label').textContent = saved ? 'Replace OpenAI API key' : 'Add OpenAI API key';
+  $('#openai-direct-save-key').textContent = saved ? 'Update key' : 'Save key';
+  $('#openai-direct-remove-key').classList.toggle('hidden', !saved);
+  refreshImageTools();
+}
+
+$('#openai-direct-toggle-key').addEventListener('click', () => {
+  const input = $('#openai-direct-api-key');
+  input.type = input.type === 'password' ? 'text' : 'password';
+  $('#openai-direct-toggle-key').textContent = input.type === 'password' ? '👁' : '🙈';
+});
+
+$('#openai-direct-save-key').addEventListener('click', async () => {
+  const apiKey = $('#openai-direct-api-key').value.trim();
+  if (!apiKey) { toast('Paste your OpenAI API key first.', 'error'); $('#openai-direct-api-key').focus(); return; }
+  const button = $('#openai-direct-save-key');
+  button.disabled = true;
+  try {
+    const { user } = await api('/api/me/openai-direct-key', { method: 'PUT', body: { apiKey } });
+    state.user = user;
+    $('#openai-direct-api-key').value = '';
+    renderDirectOpenAIKeyState();
+    applyChatSettings(); renderChat();
+    toast('OpenAI API key saved.', 'success');
+  } catch (err) { toast(err.message || 'Could not save the OpenAI API key.', 'error'); }
+  finally { button.disabled = false; }
+});
+
+$('#openai-direct-remove-key').addEventListener('click', async () => {
+  if (!confirm('Remove the saved OpenAI API key from your account?')) return;
+  try {
+    const { user } = await api('/api/me/openai-direct-key', { method: 'DELETE' });
+    state.user = user;
+    renderDirectOpenAIKeyState();
+    applyChatSettings(); renderChat();
+    toast('Saved OpenAI API key removed.', 'success');
+  } catch (err) { toast(err.message || 'Could not remove the OpenAI API key.', 'error'); }
+});
+
 function applyChatSettings() {
   if (!state.user) return;
   $('#guide-provider').value = state.user.guideProvider || 'deepseek';
@@ -820,16 +865,25 @@ function currentImageModel() {
 }
 
 function imageProviderLabel() {
-  return CARNIVAL_IMAGE_MODELS.find((model) => model.id === currentImageModel())?.provider === 'openai' ? 'OpenAI' : 'BytePlus';
+  if (CARNIVAL_IMAGE_MODELS.find((model) => model.id === currentImageModel())?.provider !== 'openai') return 'BytePlus';
+  return state.user?.openAIImageProvider === 'openai-direct' ? 'OpenAI' : 'OpenAI-compatible';
+}
+
+function imageKeySelector() {
+  return imageProviderLabel() === 'BytePlus' ? '#bp-api-key' : imageProviderLabel() === 'OpenAI' ? '#openai-direct-api-key' : '#openai-api-key';
 }
 
 function hasImageApiKey() {
-  return Boolean(state.user && (imageProviderLabel() === 'OpenAI' ? state.user.hasOpenAIKey : state.user.hasBytePlusKey));
+  return Boolean(state.user && (imageProviderLabel() === 'BytePlus' ? state.user.hasBytePlusKey
+    : imageProviderLabel() === 'OpenAI' ? state.user.hasDirectOpenAIKey : state.user.hasOpenAIKey));
 }
 
 function handleMissingImageKey(error) {
   if (!state.user) return;
-  if (error.code === 'NO_OPENAI_IMAGE_KEY') {
+  if (error.code === 'NO_DIRECT_OPENAI_KEY') {
+    state.user.hasDirectOpenAIKey = false;
+    renderDirectOpenAIKeyState();
+  } else if (error.code === 'NO_OPENAI_IMAGE_KEY') {
     state.user.hasOpenAIKey = false;
     renderOpenAIKeyState();
   } else if (error.code === 'NO_IMAGEGEN_KEY') {
@@ -888,6 +942,7 @@ function applyAiSettings() {
   const imageModel = currentImageModel();
 
   $('#text-model-pref').value = textModel;
+  $('#openai-image-provider').value = state.user.openAIImageProvider || 'openai-direct';
   applyImageModelOptions('#image-model-pref', imageModel);
   applyImageModelOptions('#generator-model', imageModel);
   ['#model', '#ref-model', '#gen-model'].forEach((selector) => {
@@ -912,7 +967,7 @@ $('#save-ai-settings').addEventListener('click', async () => {
   try {
     const { user } = await api('/api/me/ai-settings', {
       method: 'PUT',
-      body: { textModel, imageModel },
+      body: { textModel, imageModel, openAIImageProvider: $('#openai-image-provider').value },
     });
     state.user = user;
     applyAiSettings();
@@ -933,6 +988,9 @@ $('#text-model-pref').addEventListener('change', () => {
 });
 $('#image-model-pref').addEventListener('change', () => {
   $('#ai-settings-hint').textContent = 'Unsaved image-model change. Click Save model preferences.';
+});
+$('#openai-image-provider').addEventListener('change', () => {
+  $('#ai-settings-hint').textContent = 'Unsaved GPT Image provider change. Click Save model preferences.';
 });
 
 $$('.open-apis').forEach((button) => {
@@ -3271,6 +3329,7 @@ function guideHasCredentials() {
   const provider = state.user.guideProvider || 'deepseek';
   if (provider === 'anthropic') return Boolean(state.user.hasAnthropicKey);
   if (provider === 'openai') return Boolean(state.user.hasOpenAIKey);
+  if (provider === 'openai-direct') return Boolean(state.user.hasDirectOpenAIKey);
   return Boolean(state.user.hasApiKey);
 }
 
@@ -3279,6 +3338,7 @@ function reviewerHasCredentials() {
   const provider = state.user.reviewerProvider || 'deepseek';
   if (provider === 'anthropic') return Boolean(state.user.hasAnthropicKey);
   if (provider === 'openai') return Boolean(state.user.hasOpenAIKey);
+  if (provider === 'openai-direct') return Boolean(state.user.hasDirectOpenAIKey);
   return Boolean(state.user.hasApiKey);
 }
 
@@ -5329,6 +5389,10 @@ function setMobileSidebar(open) {
   const sidebar = $('#sidebar');
   if (visible && !wasOpen) sidebarPreviousFocus = document.activeElement;
   document.body.classList.toggle('sidebar-open', visible);
+  // Keep the same live widget and timer, but let mobile chat have its own space.
+  const processWidget = $('#process-widget');
+  const processHome = visible ? $('#sidebar-process-slot') : $('#process-widget-home');
+  if (processWidget.parentElement !== processHome) processHome.appendChild(processWidget);
   $('#sidebar-toggle').setAttribute('aria-expanded', String(visible));
   $('.app-header').inert = visible;
   $('.workspace').inert = visible;
@@ -7937,7 +8001,7 @@ async function runGenerationImages() {
   if (!hasImageApiKey()) {
     toast(`Save your ${imageProviderLabel()} API key in Settings to generate images.`, 'error');
     switchTab('apis');
-    $(imageProviderLabel() === 'OpenAI' ? '#openai-api-key' : '#bp-api-key').focus();
+    $(imageKeySelector()).focus();
     return;
   }
 
@@ -7974,13 +8038,13 @@ async function runGenerationImages() {
       state.generation.runProgress[prompt.id] = 'failed';
       state.generation.runProgress[`${prompt.id}:error`] = err.message || 'Image generation failed.';
       failed += 1;
-      if (err.code === 'NO_IMAGEGEN_KEY' || err.code === 'NO_OPENAI_IMAGE_KEY') {
+      if (['NO_IMAGEGEN_KEY', 'NO_OPENAI_IMAGE_KEY', 'NO_DIRECT_OPENAI_KEY'].includes(err.code)) {
         handleMissingImageKey(err);
         switchTab('apis');
-        $(imageProviderLabel() === 'OpenAI' ? '#openai-api-key' : '#bp-api-key').focus();
+        $(imageKeySelector()).focus();
       } else if (err.code === 'INVALID_IMAGEGEN_KEY' || err.code === 'IMAGEGEN_KEY_UNREADABLE') {
         switchTab('apis');
-        $(imageProviderLabel() === 'OpenAI' ? '#openai-api-key' : '#bp-api-key').focus();
+        $(imageKeySelector()).focus();
       }
       toast(err.message || 'Image generation failed.', 'error');
       break;

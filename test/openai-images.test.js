@@ -8,11 +8,13 @@ const path = require('node:path');
 const net = require('node:net');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { DatabaseSync } = require('node:sqlite');
 const catalog = require('../public/image-models');
 const { generateOpenAIImage } = require('../openaiimages');
 const ROOT = path.resolve(__dirname, '..');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2j8sAAAAASUVORK5CYII=', 'base64');
 const KEY = 'sk-openai-local-synthetic-123456789';
+const DIRECT_KEY = 'sk-direct-openai-local-synthetic-987654321';
 
 function freePort() {
   return new Promise(resolve => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const port = s.address().port; s.close(() => resolve(port)); }); });
@@ -49,6 +51,10 @@ test('OpenAI models route generation and references correctly, remain isolated, 
         images = await Promise.all(form.getAll('image[]').map(async image => ({ mime: image.type, bytes: Buffer.from(await image.arrayBuffer()) })));
       } else body = JSON.parse(bytes);
       calls.push({ url: req.url, authorization: req.headers.authorization, body, images });
+      if (req.url.endsWith('/chat/completions')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ model: body.model, choices: [{ message: { content: 'Synthetic assistant reply' } }] }));
+      }
       const mode = next; next = '';
       const status = /^\d+$/.test(mode) ? Number(mode) : 200;
       res.writeHead(status, { 'content-type': 'application/json' });
@@ -65,7 +71,7 @@ test('OpenAI models route generation and references correctly, remain isolated, 
   let child;
   const start = async () => {
     child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), DATA_DIR: temp,
-      APP_SECRET: 'openai-image-test-secret-123456789', NODE_ENV: 'test', OPENAI_BASE_URL: upstream + '/v1', BYTEPLUS_IMAGE_ENDPOINT: upstream + '/byteplus' }, stdio: 'ignore' });
+      APP_SECRET: 'openai-image-test-secret-123456789', NODE_ENV: 'test', OPENAI_BASE_URL: upstream + '/v1', OPENAI_DIRECT_TEST_BASE_URL: upstream + '/direct/v1', BYTEPLUS_IMAGE_ENDPOINT: upstream + '/byteplus' }, stdio: 'ignore' });
     for (let i = 0; i < 100; i++) { try { if ((await fetch(base + '/api/health')).ok) return; } catch {} await new Promise(resolve => setTimeout(resolve, 60)); }
     throw new Error('Test server did not start');
   };
@@ -78,7 +84,8 @@ test('OpenAI models route generation and references correctly, remain isolated, 
   const register = async username => (await request('/api/auth/register', { method: 'POST', body: { username, password: 'password123' } })).cookie;
   const cookie = await register('openai_owner');
   const other = await register('openai_other');
-  const choose = async imageModel => request('/api/me/ai-settings', { method: 'PUT', cookie, body: { imageModel } });
+  assert.equal((await request('/api/auth/me', { cookie })).data.user.openAIImageProvider, 'openai-direct');
+  const choose = async imageModel => request('/api/me/ai-settings', { method: 'PUT', cookie, body: { imageModel, openAIImageProvider: 'openai' } });
   await choose('gpt-image-2.5-sunburst');
   let result = await request('/api/generations', { method: 'POST', cookie, body: { prompt: 'A lighthouse' } });
   assert.equal(result.status, 409); assert.equal(result.data.code, 'NO_OPENAI_IMAGE_KEY'); assert.equal(calls.length, 0);
@@ -106,8 +113,43 @@ test('OpenAI models route generation and references correctly, remain isolated, 
     assert.deepEqual(result.data.generation.composition.panels, composition.panels);
   }
   const selected = catalog.filter(x => x.provider === 'openai').at(-1).id;
+  // Both slots coexist. Direct requests must ignore the compatible URL and key.
+  result = await request('/api/me/openai-direct-key', { method: 'PUT', cookie, body: { apiKey: DIRECT_KEY, baseUrl: upstream + '/wrong' } });
+  assert.equal(result.status, 200); assert.equal(result.data.user.hasOpenAIKey, true); assert.equal(result.data.user.hasDirectOpenAIKey, true);
+  assert.equal(result.data.user.openAIBaseUrl, upstream + '/v1');
+  assert.ok(!JSON.stringify(result.data).includes(DIRECT_KEY));
+  assert.equal((await request('/api/auth/me', { cookie: other })).data.user.hasDirectOpenAIKey, false);
+  assert.equal((await request('/api/me/openai-direct-key', { method: 'PUT', cookie, body: { apiKey: 'bad key' } })).status, 400);
+  result = await request('/api/me/ai-settings', { method: 'PUT', cookie, body: { openAIImageProvider: 'wrong' } }); assert.equal(result.status, 400);
+  await request('/api/me/ai-settings', { method: 'PUT', cookie, body: { openAIImageProvider: 'openai-direct' } });
+  result = await request('/api/generations', { method: 'POST', cookie, body: { prompt: 'Direct image with reference', references: [{ kind: 'upload', id: upload.data.reference.id }] } });
+  assert.equal(result.status, 201); assert.equal(calls.at(-1).url, '/direct/v1/images/edits'); assert.equal(calls.at(-1).authorization, `Bearer ${DIRECT_KEY}`);
+  for (const mode of ['guide', 'reviewer']) {
+    for (const provider of ['openai', 'openai-direct']) {
+      result = await request('/api/me/chat-settings', { method: 'PUT', cookie, body: { [`${mode}Provider`]: provider, [`${mode}Model`]: 'synthetic-chat' } });
+      assert.equal(result.status, 200);
+      result = await request('/api/chat', { method: 'POST', cookie, body: { mode, messages: [{ role: 'user', content: 'Hello' }] } });
+      assert.equal(result.status, 200, JSON.stringify(result.data));
+      assert.equal(calls.at(-1).url, provider === 'openai-direct' ? '/direct/v1/chat/completions' : '/v1/chat/completions');
+      assert.equal(calls.at(-1).authorization, `Bearer ${provider === 'openai-direct' ? DIRECT_KEY : KEY}`);
+    }
+  }
   await stop(child); await start();
   result = await request('/api/auth/me', { cookie }); assert.equal(result.data.user.imageModel, selected);
+  assert.equal(result.data.user.openAIImageProvider, 'openai-direct'); assert.equal(result.data.user.hasDirectOpenAIKey, true);
+  result = await request('/api/me/openai-direct-key', { method: 'DELETE', cookie });
+  assert.equal(result.data.user.hasOpenAIKey, true); assert.equal(result.data.user.hasDirectOpenAIKey, false);
+  let beforeMissing = calls.length;
+  result = await request('/api/generations', { method: 'POST', cookie, body: { prompt: 'No credential fallback' } });
+  assert.equal(result.status, 409); assert.equal(result.data.code, 'NO_DIRECT_OPENAI_KEY'); assert.equal(calls.length, beforeMissing);
+  await request('/api/me/openai-direct-key', { method: 'PUT', cookie, body: { apiKey: DIRECT_KEY } });
+  result = await request('/api/me/openai-key', { method: 'DELETE', cookie });
+  assert.equal(result.data.user.hasDirectOpenAIKey, true); assert.equal(result.data.user.hasOpenAIKey, false);
+  await choose(selected);
+  beforeMissing = calls.length;
+  result = await request('/api/generations', { method: 'POST', cookie, body: { prompt: 'No reverse fallback' } });
+  assert.equal(result.status, 409); assert.equal(result.data.code, 'NO_OPENAI_IMAGE_KEY'); assert.equal(calls.length, beforeMissing);
+  await request('/api/me/openai-key', { method: 'PUT', cookie, body: { apiKey: KEY, baseUrl: upstream + '/v1' } });
   assert.equal((await request('/api/generations', { cookie: other })).data.generations.length, 0);
   const callCount = calls.length;
   result = await request('/api/generations', { method: 'POST', cookie, body: { prompt: 'bad size', size: '2K' } }); assert.equal(result.status, 400);
@@ -139,6 +181,18 @@ test('OpenAI models route generation and references correctly, remain isolated, 
   await request('/api/me/byteplus-key', { method: 'PUT', cookie, body: { apiKey: 'byteplus-local-synthetic-key' } });
   result = await request('/api/generations', { method: 'POST', cookie, body: { prompt: 'Seedream still works' } }); assert.equal(result.status, 201);
   assert.equal(calls.at(-1).url, '/byteplus'); assert.equal(calls.at(-1).authorization, 'Bearer byteplus-local-synthetic-key');
+  // Simulate the previous schema: migration keeps compatible credentials/routing.
+  await stop(child);
+  const sqlite = new DatabaseSync(path.join(temp, 'app.db'));
+  const saved = sqlite.prepare('SELECT openai_api_key_enc, openai_direct_api_key_enc FROM users WHERE username = ?').get('openai_owner');
+  assert.ok(saved.openai_api_key_enc && saved.openai_direct_api_key_enc);
+  assert.ok(!saved.openai_api_key_enc.includes(KEY)); assert.ok(!saved.openai_direct_api_key_enc.includes(DIRECT_KEY));
+  for (const column of ['openai_direct_api_key_enc', 'openai_direct_api_key_hint', 'openai_image_provider']) sqlite.exec(`ALTER TABLE users DROP COLUMN ${column}`);
+  sqlite.close();
+  await start();
+  result = await request('/api/auth/me', { cookie });
+  assert.equal(result.data.user.hasOpenAIKey, true); assert.equal(result.data.user.hasDirectOpenAIKey, false); assert.equal(result.data.user.openAIImageProvider, 'openai');
+  assert.equal(result.data.user.openAIBaseUrl, upstream + '/v1');
 });
 
 test('OpenAI network timeouts and unsupported reference formats fail without retrying', async () => {

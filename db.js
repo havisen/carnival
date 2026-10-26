@@ -200,6 +200,9 @@ for (const [column, definition] of [
   ['openai_api_key_enc', 'TEXT'],
   ['openai_api_key_hint', 'TEXT'],
   ['openai_base_url', "TEXT NOT NULL DEFAULT ''"],
+  ['openai_direct_api_key_enc', 'TEXT'],
+  ['openai_direct_api_key_hint', 'TEXT'],
+  ['openai_image_provider', "TEXT NOT NULL DEFAULT 'openai'"],
   ['guide_provider', "TEXT NOT NULL DEFAULT 'deepseek'"],
   ['guide_model', "TEXT NOT NULL DEFAULT ''"],
   ['guide_context', "TEXT NOT NULL DEFAULT ''"],
@@ -217,8 +220,8 @@ for (const [column, definition] of [
 // ---------------------------------------------------------------------------
 
 const insertUserStmt = db.prepare(`
-  INSERT INTO users (id, username, password_hash, password_salt, created_at)
-  VALUES (?, ?, ?, ?, ?)
+  INSERT INTO users (id, username, password_hash, password_salt, created_at, openai_image_provider)
+  VALUES (?, ?, ?, ?, ?, 'openai-direct')
 `);
 const userByUsernameStmt = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE');
 const userByIdStmt = db.prepare('SELECT * FROM users WHERE id = ?');
@@ -227,13 +230,16 @@ const setBytePlusKeyStmt = db.prepare(
   'UPDATE users SET byteplus_api_key_enc = ?, byteplus_api_key_hint = ? WHERE id = ?'
 );
 const setAISettingsStmt = db.prepare(
-  'UPDATE users SET text_model = ?, image_model = ? WHERE id = ?'
+  'UPDATE users SET text_model = ?, image_model = ?, openai_image_provider = ? WHERE id = ?'
 );
 const setAnthropicKeyStmt = db.prepare(
   'UPDATE users SET anthropic_api_key_enc = ?, anthropic_api_key_hint = ? WHERE id = ?'
 );
 const setOpenAIKeyStmt = db.prepare(
   'UPDATE users SET openai_api_key_enc = ?, openai_api_key_hint = ?, openai_base_url = ? WHERE id = ?'
+);
+const setDirectOpenAIKeyStmt = db.prepare(
+  'UPDATE users SET openai_direct_api_key_enc = ?, openai_direct_api_key_hint = ? WHERE id = ?'
 );
 const setChatSettingsStmt = db.prepare(`
   UPDATE users SET guide_provider = ?, guide_model = ?, guide_context = ?,
@@ -263,8 +269,8 @@ function setUserBytePlusKey(userId, encrypted, hint) {
   return getUserById(userId);
 }
 
-function setUserAISettings(userId, textModel, imageModel) {
-  setAISettingsStmt.run(textModel, imageModel, userId);
+function setUserAISettings(userId, textModel, imageModel, openAIImageProvider = getUserById(userId).openai_image_provider) {
+  setAISettingsStmt.run(textModel, imageModel, openAIImageProvider, userId);
   return getUserById(userId);
 }
 
@@ -275,6 +281,11 @@ function setUserAnthropicKey(userId, encrypted, hint) {
 
 function setUserOpenAIKey(userId, encrypted, hint, baseUrl) {
   setOpenAIKeyStmt.run(encrypted, hint, baseUrl, userId);
+  return getUserById(userId);
+}
+
+function setUserDirectOpenAIKey(userId, encrypted, hint) {
+  setDirectOpenAIKeyStmt.run(encrypted, hint, userId);
   return getUserById(userId);
 }
 
@@ -305,6 +316,7 @@ const sessionStmt = db.prepare(`
          u.text_model, u.image_model, u.created_at,
          u.anthropic_api_key_enc, u.anthropic_api_key_hint,
          u.openai_api_key_enc, u.openai_api_key_hint, u.openai_base_url,
+         u.openai_direct_api_key_enc, u.openai_direct_api_key_hint, u.openai_image_provider,
          u.guide_provider, u.guide_model, u.guide_context,
          u.reviewer_provider, u.reviewer_model, u.reviewer_context
   FROM sessions s
@@ -541,6 +553,7 @@ module.exports = {
   setUserAISettings,
   setUserAnthropicKey,
   setUserOpenAIKey,
+  setUserDirectOpenAIKey,
   setUserChatSettings,
   createSession,
   getSession,

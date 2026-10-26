@@ -7,7 +7,7 @@
   <!-- Bump the ?v= value on both assets whenever either file changes. Without
        it a browser can keep running a stale app.js for days after a deploy and
        call endpoints that no longer exist. See README. -->
-  <link rel="stylesheet" href="styles.css?v=2026-10-26.2" />
+  <link rel="stylesheet" href="styles.css?v=2026-10-26.3" />
 </head>
 <body>
   <div class="boot-screen" id="boot-screen">
@@ -84,6 +84,7 @@
           <strong>Assistant &amp; AI requests</strong>
           <button class="btn btn-ghost btn-sm" id="sidebar-close" type="button">Close</button>
         </div>
+        <div class="sidebar-process-slot" id="sidebar-process-slot"></div>
         <div class="sidebar-section sidebar-checklist">
           <div class="sidebar-head">
             <h2 class="sidebar-title">AI Requests</h2>
@@ -1054,8 +1055,30 @@
             </div>
 
             <div class="card">
-              <h2 class="card-title">OpenAI-compatible API</h2>
-              <p class="hint">Used by OpenAI-compatible chat and GPT Image generation. For OpenAI image models, use your OpenAI key and https://api.openai.com/v1. A custom provider must support the Images API.</p>
+              <h2 class="card-title">OpenAI</h2>
+              <p class="hint">Connect directly to OpenAI for GPT Image, Guide, and Reviewer. Requests go to https://api.openai.com/v1.</p>
+              <div class="key-state" id="openai-direct-key-empty">
+                <span class="key-dot key-dot-missing"></span><p>No OpenAI key saved yet.</p>
+              </div>
+              <div class="key-state hidden" id="openai-direct-key-saved">
+                <span class="key-dot"></span><p>Using your saved key <code id="openai-direct-key-hint">—</code>.</p>
+              </div>
+              <label class="field">
+                <span class="field-label" id="openai-direct-key-label">Add OpenAI API key</span>
+                <div class="input-with-action">
+                  <input type="password" id="openai-direct-api-key" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+                  <button class="btn btn-ghost" id="openai-direct-toggle-key" type="button" title="Show / hide OpenAI key">👁</button>
+                </div>
+              </label>
+              <div class="key-actions">
+                <button class="btn btn-secondary" id="openai-direct-save-key" type="button">Save key</button>
+                <button class="btn btn-ghost btn-sm hidden" id="openai-direct-remove-key" type="button">Remove saved key</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2 class="card-title">OpenAI-compatible</h2>
+              <p class="hint">Connect a compatible provider using its own key and base URL. GPT Image requires a provider that supports the Images API.</p>
               <div class="key-state" id="openai-key-empty">
                 <span class="key-dot key-dot-missing"></span>
                 <p>No OpenAI-compatible key saved yet.</p>
@@ -1099,7 +1122,15 @@
                   <option value="dola-seedream-5-0-pro-260628">Seedream 5.0 Pro — 1K / 1.5K / 2K</option>
                 </select>
               </label>
-              <p class="hint">Used by all image tools. Seedream uses your BytePlus key; GPT Image uses your saved OpenAI key. Model access depends on your provider account.</p>
+              <p class="hint">Used by all image tools. Seedream uses your BytePlus key. Model access depends on your provider account.</p>
+              <label class="field">
+                <span class="field-label">GPT Image provider</span>
+                <select id="openai-image-provider">
+                  <option value="openai-direct">OpenAI</option>
+                  <option value="openai">OpenAI-compatible</option>
+                </select>
+              </label>
+              <p class="hint">GPT Image uses the key saved for this provider.</p>
 
               <button class="btn btn-primary" id="save-ai-settings" type="button">Save model preferences</button>
               <p class="hint" id="ai-settings-hint">Choose a text and image model, then save.</p>
@@ -1117,6 +1148,7 @@
                     <option value="deepseek">DeepSeek</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="openai">OpenAI-compatible</option>
+                    <option value="openai-direct">OpenAI</option>
                   </select>
                 </label>
                 <label class="field">
@@ -1137,6 +1169,7 @@
                     <option value="deepseek">DeepSeek</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="openai">OpenAI-compatible</option>
+                    <option value="openai-direct">OpenAI</option>
                   </select>
                 </label>
                 <label class="field">
@@ -1411,7 +1444,7 @@
           <h2 class="card-title">Settings</h2>
           <ul class="docs-list">
             <li><strong>DeepSeek API</strong> — key for ideas, references, scene prompts, and the default chat.</li>
-            <li><strong>BytePlus image API</strong> — key for Seedream image generation. <strong>OpenAI-compatible API</strong> supplies the key and endpoint for GPT Image and OpenAI-compatible chat.</li>
+            <li><strong>BytePlus image API</strong> — key for Seedream image generation. <strong>OpenAI</strong> — separate key for direct GPT Image and chat requests. Choose the GPT Image provider in Default models.</li>
             <li><strong>Anthropic API</strong> — key for Claude models in the chat.</li>
             <li><strong>OpenAI-compatible API</strong> — key and base URL for any OpenAI-compatible provider.</li>
             <li><strong>Default models</strong> — the text and image models used across the app.</li>
@@ -1454,6 +1487,7 @@
       </div>
     </div>
 
+    <div id="process-widget-home">
     <div class="process-widget hidden" id="process-widget" aria-live="polite">
       <div class="process-head">
         <span class="spinner-ring process-spinner"></span>
@@ -1461,6 +1495,7 @@
         <span class="process-count" id="process-count">0</span>
       </div>
       <div class="process-list" id="process-list"></div>
+    </div>
     </div>
 
     <!-- Library image detail -->
@@ -1668,7 +1703,7 @@
 
   <div class="toast hidden" id="toast"></div>
 
-  <script src="image-models.js?v=2026-10-26.2"></script>
-  <script src="app.js?v=2026-10-26.2"></script>
+  <script src="image-models.js?v=2026-10-26.3"></script>
+  <script src="app.js?v=2026-10-26.3"></script>
 </body>
 </html>
